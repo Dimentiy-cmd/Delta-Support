@@ -517,3 +517,32 @@ async def back_to_ai(request: Request, chat_id: int, user: AdminUser = Depends(g
     except Exception:
         pass
     return {"ok": True}
+
+
+@router.delete("/{chat_id}")
+async def delete_chat(chat_id: int, request: Request, user: AdminUser = Depends(get_current_user)):
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    chat = await Chat.get_or_none(id=chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    
+    from modules.database import Message, ManagerNotification
+    await Message.filter(chat_id=chat_id).delete()
+    await ManagerNotification.filter(chat_id=chat_id).delete()
+    
+    bot = request.app.state.bot
+    if bot._group_id and getattr(bot, "redis", None):
+        thread_id = bot.redis.get(f"group_topic:chat:{chat.id}")
+        if thread_id:
+            try:
+                await bot.application.bot.delete_forum_topic(chat_id=bot._group_id, message_thread_id=int(thread_id))
+            except Exception:
+                pass
+            bot.redis.delete(f"group_topic:chat:{chat.id}")
+            bot.redis.delete(f"group_topic:thread:{thread_id}")
+            bot.redis.delete(f"group_topic:name:{thread_id}")
+            bot.redis.delete(f"group_topic:pin:{thread_id}")
+
+    await chat.delete()
+    return {"ok": True}

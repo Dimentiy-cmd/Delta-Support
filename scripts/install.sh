@@ -218,8 +218,8 @@ if [ -z "$PROJECT_WEBSITE" ]; then PROJECT_WEBSITE="$(prompt "Сайт прое�
 if [ -z "$PROJECT_BOT_LINK" ]; then PROJECT_BOT_LINK="$(prompt "Ссылка на бота (если есть)" "")"; fi
 if [ -z "$PROJECT_OWNER_CONTACTS" ]; then PROJECT_OWNER_CONTACTS="$(prompt "Контакты владельца" "")"; fi
 
-WEB_PORT="${WEB_PORT:-}"
-if [ -z "$WEB_PORT" ]; then WEB_PORT="$(prompt "Порт веб-интерфейса" "3030")"; fi
+APP_PORT="${APP_PORT:-}"
+if [ -z "$APP_PORT" ]; then APP_PORT="$(prompt "Порт веб-интерфейса" "3030")"; fi
 
 say_header "Настройка Telegram"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
@@ -248,28 +248,6 @@ if [ "$ENABLE_GROUP" = "y" ] || [ "$ENABLE_GROUP" = "Y" ]; then
   TELEGRAM_GROUP_MODE="true"
   TELEGRAM_SUPPORT_GROUP_ID="${TELEGRAM_SUPPORT_GROUP_ID:-}"
   if [ -z "$TELEGRAM_SUPPORT_GROUP_ID" ]; then TELEGRAM_SUPPORT_GROUP_ID="$(prompt "ID Telegram группы (с форумом)" "")"; fi
-fi
-
-say_header "Настройка AI"
-AI_ENABLED="${AI_ENABLED:-}"
-if [ -z "$AI_ENABLED" ]; then AI_ENABLED="$(prompt "Включить AI поддержку? (y/n)" "y")"; fi
-AI_SUPPORT_ENABLED="false"
-AI_SUPPORT_API_TYPE="groq"
-AI_SUPPORT_API_KEY="${AI_SUPPORT_API_KEY:-}"
-if [ "$AI_ENABLED" = "y" ] || [ "$AI_ENABLED" = "Y" ]; then
-  AI_SUPPORT_ENABLED="true"
-  AI_TYPE_CHOICE="${AI_TYPE_CHOICE:-}"
-  if [ -z "$AI_TYPE_CHOICE" ]; then AI_TYPE_CHOICE="$(prompt "Тип AI API: 1) Groq  2) Rule-based" "1")"; fi
-  if [ "$AI_TYPE_CHOICE" = "2" ]; then
-    AI_SUPPORT_API_TYPE="rule-based"
-    AI_SUPPORT_API_KEY=""
-  else
-    AI_SUPPORT_API_TYPE="groq"
-    if [ -z "$AI_SUPPORT_API_KEY" ]; then AI_SUPPORT_API_KEY="$(prompt_secret "Groq API ключ")"; fi
-    if [ -n "$AI_SUPPORT_API_KEY" ] && ! is_groq_key "$AI_SUPPORT_API_KEY"; then
-      warn "Groq ключ выглядит нестандартно. Обычно начинается с gsk_."
-    fi
-  fi
 fi
 
 sanitize_one_line() {
@@ -302,10 +280,7 @@ TELEGRAM_ADMIN_IDS="$(sanitize_one_line "$TELEGRAM_ADMIN_IDS")"
 TELEGRAM_MANAGER_IDS="$(sanitize_one_line "$TELEGRAM_MANAGER_IDS")"
 TELEGRAM_GROUP_MODE="$(sanitize_one_line "$TELEGRAM_GROUP_MODE")"
 TELEGRAM_SUPPORT_GROUP_ID="$(sanitize_one_line "$TELEGRAM_SUPPORT_GROUP_ID")"
-AI_SUPPORT_ENABLED="$(sanitize_one_line "$AI_SUPPORT_ENABLED")"
-AI_SUPPORT_API_TYPE="$(sanitize_one_line "$AI_SUPPORT_API_TYPE")"
-AI_SUPPORT_API_KEY="$(sanitize_one_line "$AI_SUPPORT_API_KEY")"
-WEB_PORT="$(sanitize_one_line "$WEB_PORT")"
+APP_PORT="$(sanitize_one_line "$APP_PORT")"
 
 JWT_SECRET_KEY="$(generate_secret)"
 POSTGRES_USER="delta_support"
@@ -318,15 +293,12 @@ set_dotenv PROJECT_DESCRIPTION "$PROJECT_DESCRIPTION"
 set_dotenv PROJECT_WEBSITE "$PROJECT_WEBSITE"
 set_dotenv PROJECT_BOT_LINK "$PROJECT_BOT_LINK"
 set_dotenv PROJECT_OWNER_CONTACTS "$PROJECT_OWNER_CONTACTS"
-set_dotenv WEB_PORT "$WEB_PORT"
+set_dotenv APP_PORT "$APP_PORT"
 set_dotenv TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
 set_dotenv TELEGRAM_ADMIN_IDS "$TELEGRAM_ADMIN_IDS"
 set_dotenv TELEGRAM_MANAGER_IDS "$TELEGRAM_MANAGER_IDS"
 set_dotenv TELEGRAM_GROUP_MODE "$TELEGRAM_GROUP_MODE"
 set_dotenv TELEGRAM_SUPPORT_GROUP_ID "$TELEGRAM_SUPPORT_GROUP_ID"
-set_dotenv AI_SUPPORT_ENABLED "$AI_SUPPORT_ENABLED"
-set_dotenv AI_SUPPORT_API_TYPE "$AI_SUPPORT_API_TYPE"
-set_dotenv AI_SUPPORT_API_KEY "$AI_SUPPORT_API_KEY"
 set_dotenv POSTGRES_USER "$POSTGRES_USER"
 set_dotenv POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
 set_dotenv POSTGRES_DB "$POSTGRES_DB"
@@ -341,7 +313,7 @@ $COMPOSE up -d --build
 
 info "Ожидаю готовности сервиса..."
 for i in $(seq 1 60); do
-  if curl -fsS "http://localhost:${WEB_PORT}/api/branding" >/dev/null 2>&1; then
+  if curl -fsS "http://localhost:${APP_PORT}/api/branding" >/dev/null 2>&1; then
     break
   fi
   sleep 2
@@ -362,7 +334,8 @@ if [ -z "$PUBLIC_IP" ]; then
 fi
 
 echo ""
-info "Веб-интерфейс: http://${PUBLIC_IP}:${WEB_PORT}/"
+info "Веб-интерфейс: http://${PUBLIC_IP}:${APP_PORT}/"
 info "Логин/пароль по умолчанию: admin / admin123"
 warn "Сразу после входа поменяйте пароль пользователя admin."
 echo ""
+

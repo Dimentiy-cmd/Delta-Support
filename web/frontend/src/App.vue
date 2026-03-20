@@ -19,8 +19,8 @@
     </aside>
     <div class="main">
       <header class="topbar">
-        <div style="display:flex; flex-direction:column; gap:2px; min-width:0;">
-          <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+        <div style="display:flex; flex-direction:column; gap: calc(var(--app-gap) * 0.25); min-width:0;">
+          <div style="display:flex; align-items:center; gap: calc(var(--app-gap) * 0.75); min-width:0;">
             <div style="font-weight: 900; letter-spacing: -0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
               <span v-for="(p, idx) in brandParts" :key="idx" :style="{ color: p.color || 'inherit' }">{{ p.text }}</span>
             </div>

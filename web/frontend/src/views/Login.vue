@@ -25,7 +25,7 @@
         <div class="muted" style="font-size: 13px; margin-top: 6px;">Введите логин и пароль</div>
         <br>
 
-        <div style="display:flex; flex-direction:column; gap:10px; margin-top: 16px;">
+        <div style="display:flex; flex-direction:column; gap: calc(var(--app-gap)*0.75); margin-top: var(--app-padding);">
           <span class="p-input-icon-left" style="width: 100%;">
             <i class="pi pi-user"></i>
             <InputText v-model="username" style="width: 100%;" placeholder="Имя пользователя" autocomplete="username" />

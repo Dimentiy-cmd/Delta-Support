@@ -34,6 +34,18 @@ async def put_system_setting(key: str, request: Request, user: AdminUser = Depen
         await row.save()
     else:
         await SystemConfig.create(key=key, value=str(value), description=description)
+    
+    # Сброс кеша AI при изменении настроек
+    try:
+        from modules.ai_support import AISupport
+        from modules.config import Config
+        config = Config()
+        ai = AISupport(config)
+        ai.invalidate_cache()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to invalidate AI cache: {e}")
+    
     return {"ok": True}
 
 
@@ -125,6 +137,18 @@ async def put_ai_context(request: Request, user: AdminUser = Depends(get_current
     for k in keys:
         if k in body:
             await SystemConfig.update_or_create(key=k, defaults={"value": str(body.get(k) or ""), "description": f"AI контекст: {k}"})
+    
+    # Сброс кеша AI
+    try:
+        from modules.ai_support import AISupport
+        from modules.config import Config
+        config = Config()
+        ai = AISupport(config)
+        ai.invalidate_cache()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to invalidate AI cache: {e}")
+    
     return {"ok": True}
 
 
@@ -139,6 +163,18 @@ async def reset_ai_context(user: AdminUser = Depends(get_current_user)):
         "service_support_hours",
     ]
     await SystemConfig.filter(key__in=keys).delete()
+    
+    # Сброс кеша AI
+    try:
+        from modules.ai_support import AISupport
+        from modules.config import Config
+        config = Config()
+        ai = AISupport(config)
+        ai.invalidate_cache()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to invalidate AI cache: {e}")
+    
     return {"ok": True}
 
 
