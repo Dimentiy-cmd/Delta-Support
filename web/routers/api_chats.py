@@ -198,10 +198,11 @@ async def send_api_message(request: Request, chat_id: int, user: AdminUser = Dep
         await Message.filter(id=msg.id).update(tg_message_id_user=sent_user.message_id)
     except Exception:
         pass
-    if bot.config.telegram_group_mode and bot.config.telegram_support_group_id:
+    if bot._group_id:
         thread_id = await bot._ensure_group_topic(chat)
         if thread_id:
-            sent_group = await bot.application.bot.send_message(chat_id=bot.config.telegram_support_group_id, message_thread_id=int(thread_id), text=text, parse_mode=ParseMode.HTML)
+            group_text = f"👨‍💼 Менеджер (web):\n{text}"
+            sent_group = await bot.application.bot.send_message(chat_id=bot._group_id, message_thread_id=int(thread_id), text=group_text, parse_mode=ParseMode.HTML)
             try:
                 await Message.filter(id=msg.id).update(tg_message_id_group=sent_group.message_id)
             except Exception:
@@ -346,24 +347,25 @@ async def send_api_media(
             await Message.filter(id=msg.id).update(tg_message_id_user=sent_user.message_id, media_file_id=file_id)
         except Exception:
             pass
-    if bot.config.telegram_group_mode and bot.config.telegram_support_group_id:
+    if bot._group_id:
         thread_id = await bot._ensure_group_topic(chat)
         if thread_id:
+            group_caption = f"👨‍💼 Менеджер (web):\n{caption}" if caption else "👨‍💼 Менеджер (web)"
             try:
                 if media_type == "photo":
                     sent_group = await bot.application.bot.send_photo(
-                        chat_id=bot.config.telegram_support_group_id,
+                        chat_id=bot._group_id,
                         message_thread_id=int(thread_id),
                         photo=io.BytesIO(raw_bytes),
-                        caption=caption or None,
+                        caption=group_caption,
                         parse_mode=ParseMode.HTML,
                     )
                 elif media_type == "video":
                     sent_group = await bot.application.bot.send_video(
-                        chat_id=bot.config.telegram_support_group_id,
+                        chat_id=bot._group_id,
                         message_thread_id=int(thread_id),
                         video=io.BytesIO(raw_bytes),
-                        caption=caption or None,
+                        caption=group_caption,
                         parse_mode=ParseMode.HTML,
                     )
                 else:
@@ -373,10 +375,10 @@ async def send_api_media(
                     except Exception:
                         pass
                     sent_group = await bot.application.bot.send_document(
-                        chat_id=bot.config.telegram_support_group_id,
+                        chat_id=bot._group_id,
                         message_thread_id=int(thread_id),
                         document=bio,
-                        caption=caption or None,
+                        caption=group_caption,
                         parse_mode=ParseMode.HTML,
                     )
                 try:

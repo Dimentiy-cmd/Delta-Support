@@ -8,7 +8,7 @@
         </div>
         <div style="display:flex; flex-direction:column; gap:6px;">
           <RouterLink class="s-item" to="/settings/branding"><i class="pi pi-palette" />Брендинг</RouterLink>
-          <RouterLink class="s-item" to="/settings/bot"><i class="pi pi-send" />Bot</RouterLink>
+          <RouterLink class="s-item" to="/settings/bot"><i class="pi pi-send" />Bot & AI</RouterLink>
           <RouterLink class="s-item" to="/settings/telegram"><i class="pi pi-comments" />Telegram топики</RouterLink>
           <RouterLink class="s-item" to="/settings/ai"><i class="pi pi-microchip" />AI контекст</RouterLink>
           <RouterLink class="s-item" to="/settings/kb"><i class="pi pi-book" />База знаний</RouterLink>
