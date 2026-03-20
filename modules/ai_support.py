@@ -7,8 +7,6 @@ import os
 import logging
 import json
 import time
-import asyncpg
-import aiosqlite
 import httpx
 from typing import Optional, Dict, List
 from modules.config import Config
@@ -16,14 +14,12 @@ from modules.database import KnowledgeBaseEntry, SystemConfig, AIProvider
 
 logger = logging.getLogger(__name__)
 
-
 class AISupport:
     """Класс для работы с AI поддержкой"""
     
     def __init__(self, config: Config):
         self.config = config
         self.enabled = config.ai_support_enabled
-        self.project_databases = config.get_project_databases()
         
         self._runtime_settings_ts = 0.0
         self._runtime_settings = {}
@@ -33,7 +29,6 @@ class AISupport:
         self._runtime_project_bot_link = config.project_bot_link or ""
         self._runtime_project_owner_contacts = config.project_owner_contacts or ""
         self._runtime_system_prompt = ""
-        self._runtime_db_keywords = None
         self._ai_providers = []
 
     async def _refresh_runtime_settings(self):
@@ -49,7 +44,6 @@ class AISupport:
             "project_owner_contacts",
             "ai_system_prompt",
             "ai_support_enabled",
-            "ai_db_keywords",
         ]
         rows = await SystemConfig.filter(key__in=keys).all()
         values = {r.key: (r.value or "") for r in rows}
@@ -72,17 +66,6 @@ class AISupport:
         # Загружаем провайдеров из БД
         self._ai_providers = await AIProvider.filter(is_active=True).order_by("priority", "id").all()
 
-        dbkw = (values.get("ai_db_keywords") or "").strip()
-        if dbkw:
-            parts = []
-            for chunk in dbkw.replace("\n", ",").split(","):
-                t = chunk.strip()
-                if t:
-                    parts.append(t.lower())
-            self._runtime_db_keywords = parts or None
-        else:
-            self._runtime_db_keywords = None
-    
     async def get_ai_answer(
         self, 
         question: str, 
@@ -144,14 +127,10 @@ class AISupport:
         service_context = await self._build_service_context(context)
         project_name = self._runtime_project_name or "DELTA-Support"
         
-        default_prompt = """Ты профессиональный помощник службы поддержки VPN проекта {project_name}.
-... (остальной промпт остается таким же) ..."""
-        # (Для краткости я не дублирую весь текст промпта, но в реальном коде он должен быть полным)
-        # Вставим полный промпт для корректности
-        default_prompt = """Ты профессиональный помощник службы поддержки VPN проекта {project_name}.
+        default_prompt = """Ты профессиональный помощник службы поддержки проекта {project_name}.
 
 ТВОЯ РОЛЬ:
-- Помогать пользователям решать их вопросы о VPN сервисе
+- Помогать пользователям решать их вопросы о сервисе
 - Предоставлять точную информацию на основе данных о сервисе
 - Быть вежливым, дружелюбным и профессиональным
 - Если не можешь решить вопрос - предложить пригласить менеджера
@@ -159,21 +138,12 @@ class AISupport:
 ПРАВИЛА ОБЩЕНИЯ:
 - Отвечай на русском языке, если вопрос на русском
 - Используй информацию о сервисе для точных ответов
-- НЕ называй пользователя другими именами или проектами
 - Обращайся к пользователю по имени (если известно) или на "вы"
 - Будь конкретным и полезным в ответах
 - Если вопрос неясен - уточни детали
 
-СТРУКТУРА ОТВЕТОВ:
-- Начни с приветствия или подтверждения понимания вопроса
-- Дай четкий и структурированный ответ
-- Если нужно - используй нумерованные списки или пункты
-- В конце предложи дополнительную помощь или пригласи менеджера, если вопрос сложный
-
 ИНФОРМАЦИЯ О СЕРВИСЕ:
-{service_context}
-
-ВАЖНО: Если вопрос пользователя касается личных данных (баланс, подписка, тариф), но у тебя нет доступа к этой информации - предложи пользователю проверить личный кабинет или пригласить менеджера."""
+{service_context}"""
         
         tpl = self._runtime_system_prompt or default_prompt
         
@@ -183,14 +153,6 @@ class AISupport:
         ctx = dict(context or {})
         ctx.update({"project_name": project_name, "service_context": service_context})
         system_prompt = tpl.format_map(_SafeDict(ctx))
-        
-        # Проверка БД проектов
-        user_id = context.get("user_id") if context else None
-        db_keywords = self._runtime_db_keywords or ["пользователь", "подписка", "тариф", "баланс", "аккаунт"]
-        if any(kw in question.lower() for kw in db_keywords):
-            project_data = await self._get_project_data(question, user_id)
-            if project_data:
-                system_prompt += f"\n\nДоп. информация из БД:\n{project_data}"
 
         messages = [{"role": "system", "content": system_prompt}]
         if chat_history:
@@ -217,13 +179,42 @@ class AISupport:
                 raise Exception(f"API Error {response.status_code}: {response.text}")
 
     async def _build_service_context(self, context: Optional[Dict] = None) -> str:
-        """Построить контекст о сервисе (то же самое, что было)"""
-        # ... (код остается таким же, как в оригинале) ...
-        # (Для краткости я пропущу повторение вспомогательных методов, 
-        # но в итоговом файле они должны быть)
-        # Я использую read_file и write_file целиком, чтобы ничего не потерять
-        pass
-
-    # ... (все остальные методы: _get_service_info_from_admin_db, _get_knowledge_base_text, 
-    # _get_service_info_from_db, _query_service_info_postgres, _query_service_info_sqlite,
-    # _get_project_data, _query_postgres_enhanced, _query_sqlite_enhanced, _get_rule_based_answer)
+        """Построить контекст о сервисе из базы знаний и настроек"""
+        parts = []
+        
+        # 1. Основная информация о проекте
+        parts.append(f"Название проекта: {self._runtime_project_name}")
+        if self._runtime_project_description:
+            parts.append(f"Описание: {self._runtime_project_description}")
+        if self._runtime_project_website:
+            parts.append(f"Сайт: {self._runtime_project_website}")
+        if self._runtime_project_bot_link:
+            parts.append(f"Бот: {self._runtime_project_bot_link}")
+        if self._runtime_project_owner_contacts:
+            parts.append(f"Контакты поддержки: {self._runtime_project_owner_contacts}")
+            
+        # 2. Данные пользователя из контекста (если есть)
+        if context:
+            user_info = []
+            if context.get("first_name"):
+                user_info.append(f"Имя: {context['first_name']}")
+            if context.get("username"):
+                user_info.append(f"Username: @{context['username']}")
+            if context.get("user_id"):
+                user_info.append(f"ID: {context['user_id']}")
+            
+            if user_info:
+                parts.append("\nИнформация о текущем пользователе:")
+                parts.append(", ".join(user_info))
+                
+        # 3. База знаний
+        try:
+            kb_entries = await KnowledgeBaseEntry.filter(is_active=True).all()
+            if kb_entries:
+                parts.append("\nБаза знаний (FAQ и инструкции):")
+                for entry in kb_entries:
+                    parts.append(f"--- {entry.title} ---\n{entry.content}")
+        except Exception as e:
+            logger.warning(f"Ошибка получения базы знаний: {e}")
+            
+        return "\n".join(parts)
