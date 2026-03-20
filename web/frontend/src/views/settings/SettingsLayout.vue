@@ -7,7 +7,7 @@
           Профиль, пользователи, бот
         </div>
         <div style="display:flex; flex-direction:column; gap:6px;">
-          <RouterLink class="s-item" to="/settings/branding"><i class="pi pi-palette" />Брендинг</RouterLink>
+          <RouterLink class="s-item" to="/settings/appearance"><i class="pi pi-palette" />Внешний вид</RouterLink>
           <RouterLink class="s-item" to="/settings/bot"><i class="pi pi-send" />Bot & AI</RouterLink>
           <RouterLink class="s-item" to="/settings/telegram"><i class="pi pi-comments" />Telegram топики</RouterLink>
           <RouterLink class="s-item" to="/settings/ai"><i class="pi pi-microchip" />AI контекст</RouterLink>
@@ -45,14 +45,14 @@ onMounted(() => {
   align-items:center;
   gap:10px;
   padding:10px 12px;
-  border-radius: 12px;
+  border-radius: var(--app-radius);
   color: var(--app-text);
   text-decoration:none;
   border: 1px solid transparent;
 }
 .s-item:hover{ background: rgba(148, 163, 184, 0.08); }
 .router-link-active{
-  background: rgba(34, 197, 94, 0.12);
-  border-color: rgba(34, 197, 94, 0.20);
+  background: color-mix(in srgb, var(--app-brand) 0.12);
+  border-color: color-mix(in srgb, var(--app-brand) 0.20);
 }
 </style>

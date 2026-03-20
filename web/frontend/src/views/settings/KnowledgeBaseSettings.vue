@@ -8,7 +8,7 @@
       <Button v-if="auth.isAdmin" label="Добавить" icon="pi pi-plus" @click="openCreate" />
     </div>
 
-    <div class="panel card" style="padding: 10px; border-radius: 16px;">
+    <div class="panel card" style="padding: 10px; border-radius: var(--app-radius);">
       <DataTable :value="rows" responsiveLayout="scroll">
         <Column field="title" header="Название" />
         <Column field="is_active" header="Активно" style="width: 120px">

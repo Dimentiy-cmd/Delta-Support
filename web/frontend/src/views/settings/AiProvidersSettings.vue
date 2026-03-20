@@ -10,7 +10,7 @@
       </div>
     </div>
 
-    <div v-if="providers.length === 0" class="panel card" style="padding: 40px; text-align: center; border-radius: 16px;">
+    <div v-if="providers.length === 0" class="panel card" style="padding: 40px; text-align: center; border-radius: var(--app-radius);">
       <i class="pi pi-server muted" style="font-size: 2rem; margin-bottom: 12px;"></i>
       <div class="muted">Провайдеры не настроены. Добавьте первый провайдер для работы AI.</div>
     </div>
@@ -82,7 +82,7 @@
           <Password v-model="form.api_key" style="width: 100%" :feedback="false" toggleMask inputStyle="width: 100%" placeholder="sk-..." />
         </div>
 
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: calc(var(--app-gap) * 0.75);">
           <div class="field">
             <label class="muted" style="font-size: 12px; margin-bottom: 4px; display: block;">Приоритет</label>
             <InputText v-model.number="form.priority" type="number" style="width: 100%" />
@@ -205,16 +205,16 @@ onMounted(fetchProviders)
 .grid-container {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 16px;
+  gap: var(--app-gap);
   margin-top: 20px;
 }
 
 .provider-card {
-  padding: 16px;
-  border-radius: 16px;
+  padding: var(--app-padding);
+  border-radius: var(--app-radius);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: calc(var(--app-gap) * 0.75);
   transition: transform 0.2s, box-shadow 0.2s;
 }
 
@@ -238,7 +238,7 @@ onMounted(fetchProviders)
   font-size: 16px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: calc(var(--app-gap) * 0.5);
 }
 
 .provider-type-icon {
@@ -268,7 +268,7 @@ onMounted(fetchProviders)
 }
 
 .status-active {
-  color: #22c55e;
+  color: var(--app-brand);
   font-weight: 600;
 }
 
@@ -279,7 +279,7 @@ onMounted(fetchProviders)
 .form-grid {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--app-gap);
   padding-top: 10px;
 }
 </style>

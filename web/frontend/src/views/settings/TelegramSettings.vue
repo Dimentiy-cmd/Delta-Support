@@ -8,7 +8,7 @@
       <Button v-if="auth.isAdmin" label="Сохранить" icon="pi pi-check" :loading="saving" @click="save" />
     </div>
 
-    <div class="panel card" style="padding: 14px; border-radius: 16px; max-width: 100%; width: 100%;">
+    <div class="panel card" style="padding: 14px; border-radius: var(--app-radius); max-width: 100%; width: 100%;">
       <div style="display:flex; flex-direction:column; gap: 14px;">
         <label style="display:flex; align-items:center; gap:10px;">
           <input v-model="form.telegram_group_mode" type="checkbox" />
@@ -31,7 +31,7 @@
           <InputText v-model="form.telegram_topic_title_template" placeholder="{emoji} {first_name} ({user_id}) {status_label}" style="width: 100%;" />
         </div>
 
-        <div class="panel" style="border-radius: 16px; padding: 12px;">
+        <div class="panel" style="border-radius: var(--app-radius); padding: 12px;">
           <div class="muted" style="font-size: 12px; margin-bottom: 10px;">Эмодзи по статусу</div>
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
             <div>
@@ -49,7 +49,7 @@
           </div>
         </div>
 
-        <div class="panel" style="border-radius: 16px; padding: 12px;">
+        <div class="panel" style="border-radius: var(--app-radius); padding: 12px;">
           <div class="muted" style="font-size: 12px; margin-bottom: 10px;">Эмодзи по событию</div>
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
             <div>

@@ -144,7 +144,7 @@
     <div v-if="profileOpen && activeChat" class="sheet-overlay" @click="profileOpen = false">
       <div class="sheet" @click.stop>
         <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding: 14px;">
-          <div style="display:flex; align-items:center; gap: 12px; min-width:0;">
+          <div style="display:flex; align-items:center; gap: calc(var(--app-gap) * 0.75); min-width:0;">
             <div class="sheet-avatar">
               <img v-if="profile && !avatarFailed" :src="profile.avatar_url" @error="avatarFailed = true" />
               <span v-else>{{ avatarLabel(activeChat) }}</span>

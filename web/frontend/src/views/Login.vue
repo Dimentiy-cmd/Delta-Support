@@ -84,12 +84,12 @@ async function login(){
 </script>
 
 <style scoped>
-.login { display:flex; align-items:center; justify-content:center; height:100%; padding: 16px; }
+.login { display:flex; align-items:center; justify-content:center; height:100%; padding: var(--app-padding); }
 .login-shell { width: min(920px, 100%); border-radius: 22px; overflow:hidden; display:grid; grid-template-columns: 1fr 420px; }
-.login-left { padding: 22px; border-right: 1px solid var(--app-border); background: linear-gradient(135deg, rgba(34,197,94,0.12), rgba(56,189,248,0.10)); }
+.login-left { padding: 22px; border-right: 1px solid var(--app-border); background: linear-gradient(135deg, color-mix(in srgb, var(--app-brand) 12%, transparent), rgba(56,189,248,0.10)); }
 .login-right { padding: 22px; background: var(--app-panel); }
-.login-brand { display:flex; align-items:center; gap: 12px; }
-.login-logo { width: 56px; height: 56px; border-radius: 18px; border: 1px solid var(--app-border); background: rgba(34,197,94,0.10); display:flex; align-items:center; justify-content:center; overflow:hidden; font-weight: 900; font-size: 20px; }
+.login-brand { display:flex; align-items:center; gap: calc(var(--app-gap) * 0.75); }
+.login-logo { width: 56px; height: 56px; border-radius: var(--app-radius); border: 1px solid var(--app-border); background: color-mix(in srgb, var(--app-brand) 10%, transparent); display:flex; align-items:center; justify-content:center; overflow:hidden; font-weight: 900; font-size: 20px; }
 .login-logo img { width: 100%; height: 100%; object-fit: cover; }
 .login-title { font-weight: 950; font-size: 18px; letter-spacing: -0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .login-sub { font-size: 12px; color: var(--app-muted); margin-top: 2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

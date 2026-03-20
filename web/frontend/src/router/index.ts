@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import Chats from '@/views/Chats.vue'
 import Login from '@/views/Login.vue'
 import SettingsLayout from '@/views/settings/SettingsLayout.vue'
-import BrandingSettings from '@/views/settings/BrandingSettings.vue'
+import AppearanceSettings from '@/views/settings/AppearanceSettings.vue'
 import AiContextSettings from '@/views/settings/AiContextSettings.vue'
 import KnowledgeBaseSettings from '@/views/settings/KnowledgeBaseSettings.vue'
 import MediaSettings from '@/views/settings/MediaSettings.vue'
@@ -32,7 +32,7 @@ const routes = [
     component: SettingsLayout,
     children: [
       { path: '', redirect: '/settings/profile' },
-      { path: 'branding', component: BrandingSettings },
+      { path: 'appearance', component: AppearanceSettings },
       { path: 'telegram', component: TelegramSettings },
       { path: 'bot', component: BotSettings },
       { path: 'ai', component: AiContextSettings },

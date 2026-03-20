@@ -13,7 +13,7 @@
 
     <div class="space-y-4">
       <!-- Project Section -->
-      <div class="panel card" style="padding: 16px; border-radius: 16px;">
+      <div class="panel card" style="padding: var(--app-padding); border-radius: var(--app-radius);">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom: 16px;">
           <i class="pi pi-info-circle" style="color: var(--app-brand)"></i>
           <span style="font-weight: 700;">Информация о проекте</span>
@@ -40,7 +40,7 @@
       </div>
 
       <!-- Welcome Message Section -->
-      <div class="panel card" style="padding: 16px; border-radius: 16px;">
+      <div class="panel card" style="padding: var(--app-padding); border-radius: var(--app-radius);">
         <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 16px;">
           <div style="display:flex; align-items:center; gap:8px;">
             <i class="pi pi-comment" style="color: var(--app-brand)"></i>
@@ -52,7 +52,7 @@
       </div>
 
       <!-- AI Global Section -->
-      <div class="panel card" style="padding: 16px; border-radius: 16px;">
+      <div class="panel card" style="padding: var(--app-padding); border-radius: var(--app-radius);">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom: 16px;">
           <i class="pi pi-bolt" style="color: var(--app-brand)"></i>
           <span style="font-weight: 700;">AI Поддержка</span>
@@ -60,7 +60,7 @@
 
         <div class="grid-form">
           <div class="field full-width">
-            <div style="display:flex; align-items:center; gap:10px; padding: 12px; background: rgba(34, 197, 94, 0.05); border-radius: 12px; border: 1px solid rgba(34, 197, 94, 0.1);">
+            <div style="display:flex; align-items:center; gap:10px; padding: 12px; background: color-mix(in srgb, var(--app-brand) 0.05); border-radius: var(--app-radius); border: 1px solid color-mix(in srgb, var(--app-brand) 0.1);">
               <Checkbox v-model="form.ai_support_enabled" :binary="true" inputId="ai_enabled" />
               <label for="ai_enabled" style="cursor: pointer; font-weight: 600;">AI поддержка включена</label>
             </div>
@@ -81,7 +81,7 @@
               <Button label="Добавить" icon="pi pi-plus" size="small" text @click="openCreateModal" />
             </div>
 
-            <div v-if="providers.length === 0" style="padding: 20px; text-align: center; background: rgba(148, 163, 184, 0.05); border-radius: 12px; border: 1px dashed var(--app-border);">
+            <div v-if="providers.length === 0" style="padding: calc(var(--app-padding) * 1.25); text-align: center; background: rgba(148, 163, 184, 0.05); border-radius: var(--app-radius); border: 1px dashed var(--app-border);">
               <div class="muted" style="font-size: 13px;">Нет настроенных провайдеров. AI не будет работать.</div>
             </div>
 
@@ -133,7 +133,7 @@
           <label class="muted label-small">API Ключ</label>
           <Password v-model="pForm.api_key" style="width: 100%" :feedback="false" toggleMask inputStyle="width: 100%" placeholder="sk-..." />
         </div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: calc(var(--app-gap) * 0.75);">
           <div class="field">
             <label class="muted label-small">Приоритет</label>
             <InputText v-model.number="pForm.priority" type="number" style="width: 100%" />
@@ -299,12 +299,12 @@ onMounted(load)
 </script>
 
 <style scoped>
-.grid-form { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-form { display: grid; grid-template-columns: 1fr 1fr; gap: var(--app-gap); }
 .field { display: flex; flex-direction: column; }
 .full-width { grid-column: 1 / -1; }
 .label-small { font-size: 11px; font-weight: 700; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--app-muted); }
 
-.providers-list { display: flex; flex-direction: column; gap: 8px; }
+.providers-list { display: flex; flex-direction: column; gap: calc(var(--app-gap) * 0.5); }
 .provider-item {
   display: flex;
   align-items: center;
@@ -312,7 +312,7 @@ onMounted(load)
   padding: 10px 14px;
   background: rgba(148, 163, 184, 0.05);
   border: 1px solid var(--app-border);
-  border-radius: 12px;
+  border-radius: var(--app-radius);
 }
 .p-off { opacity: 0.5; }
 .p-name { font-weight: 700; font-size: 14px; display: flex; align-items: center; }
