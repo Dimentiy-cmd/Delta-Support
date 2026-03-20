@@ -1396,14 +1396,24 @@ class SupportBot:
             return
         try:
             name = self._format_topic_title(chat, role_hint)
+            # Cache name to avoid Topic_not_modified
+            cache_key = f"group_topic:name:{thread_id}"
+            last_name = self.redis.get(cache_key)
+            if last_name == name:
+                return
             await self.application.bot.edit_forum_topic(chat_id=self._group_id, message_thread_id=int(thread_id), name=name)
+            self.redis.set(cache_key, name)
         except Exception as e:
-            if any(s in str(e).lower() for s in ["topic_deleted", "thread not found", "invalid thread"]):
+            err_msg = str(e).lower()
+            if "topic_not_modified" in err_msg:
+                return
+            if any(s in err_msg for s in ["topic_deleted", "thread not found", "invalid thread"]):
                 new_thread = await self._recreate_group_topic(chat, role_hint)
                 if new_thread:
                     try:
                         name = self._format_topic_title(chat, role_hint)
                         await self.application.bot.edit_forum_topic(chat_id=self._group_id, message_thread_id=int(new_thread), name=name)
+                        self.redis.set(f"group_topic:name:{new_thread}", name)
                     except Exception as e2:
                         logger.warning(f"Failed to edit recreated forum topic: {e2}")
             else:
@@ -1437,14 +1447,27 @@ class SupportBot:
                     reply_to_id = int(pinned_id)
                 except Exception:
                     reply_to_id = None
-            copied = await self.application.bot.copy_message(chat_id=self._group_id, from_chat_id=user.id, message_id=info["message_id"], message_thread_id=thread_id, reply_to_message_id=reply_to_id, disable_notification=mute)
+            
+            try:
+                copied = await self.application.bot.copy_message(chat_id=self._group_id, from_chat_id=user.id, message_id=info["message_id"], message_thread_id=thread_id, reply_to_message_id=reply_to_id, disable_notification=mute)
+            except Exception as e:
+                err_lower = str(e).lower()
+                if "repl" in err_lower or "not found" in err_lower:
+                    # If reply failed (message deleted), send a header first, then without reply
+                    header_text = f"👤 Клиент: @{user.username}" if user.username else f"👤 Клиент: {user.first_name or 'Клиент'}"
+                    await self.application.bot.send_message(chat_id=self._group_id, text=header_text, message_thread_id=thread_id, disable_notification=mute)
+                    copied = await self.application.bot.copy_message(chat_id=self._group_id, from_chat_id=user.id, message_id=info["message_id"], message_thread_id=thread_id, disable_notification=mute)
+                else:
+                    raise e
+
             if self.redis:
                 self.redis.setex(f"group_reply:{self._group_id}:{copied.message_id}", 7 * 24 * 3600, json.dumps({"client_chat_id": chat.user_id, "client_message_id": info["message_id"], "chat_id": chat.id}))
                 if reply_to_id:
                     self.redis.setex(f"group_reply:{self._group_id}:{reply_to_id}", 7 * 24 * 3600, json.dumps({"client_chat_id": chat.user_id, "client_message_id": info["message_id"], "chat_id": chat.id}))
             await self._edit_group_topic_status(chat, role_hint)
         except Exception as e:
-            if any(s in str(e).lower() for s in ["topic_deleted", "message thread", "thread not found", "invalid thread"]):
+            err_msg = str(e).lower()
+            if any(s in err_msg for s in ["topic_deleted", "message thread", "thread not found", "invalid thread"]):
                 new_thread = await self._recreate_group_topic(chat, role_hint)
                 if not new_thread:
                     logger.error(f"Failed to duplicate to group: {e}")
@@ -1473,7 +1496,17 @@ class SupportBot:
                             reply_to_id = int(pinned_id)
                         except Exception:
                             reply_to_id = None
-                    copied = await self.application.bot.copy_message(chat_id=self._group_id, from_chat_id=user.id, message_id=info["message_id"], message_thread_id=new_thread, reply_to_message_id=reply_to_id, disable_notification=mute)
+                    
+                    try:
+                        copied = await self.application.bot.copy_message(chat_id=self._group_id, from_chat_id=user.id, message_id=info["message_id"], message_thread_id=new_thread, reply_to_message_id=reply_to_id, disable_notification=mute)
+                    except Exception as e_copy:
+                        if "reply" in str(e_copy).lower() or "not found" in str(e_copy).lower():
+                            header_text = f"👤 Клиент: @{user.username}" if user.username else f"👤 Клиент: {user.first_name or 'Клиент'}"
+                            await self.application.bot.send_message(chat_id=self._group_id, text=header_text, message_thread_id=new_thread, disable_notification=mute)
+                            copied = await self.application.bot.copy_message(chat_id=self._group_id, from_chat_id=user.id, message_id=info["message_id"], message_thread_id=new_thread, disable_notification=mute)
+                        else:
+                            raise e_copy
+
                     if self.redis:
                         self.redis.setex(f"group_reply:{self._group_id}:{copied.message_id}", 7 * 24 * 3600, json.dumps({"client_chat_id": chat.user_id, "client_message_id": info["message_id"], "chat_id": chat.id}))
                         if reply_to_id:

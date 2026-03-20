@@ -1,6 +1,6 @@
 <template>
   <div>
-    <div style="display:flex; align-items:center; justify-content:space-between; gap: 12px; margin-bottom: 12px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap: calc(var(--app-gap) * 0.75); margin-bottom: 12px;">
       <div>
         <div style="font-size: 18px; font-weight: 700;">Профиль</div>
         <div class="muted" style="font-size: 13px;">Смена пароля и данные аккаунта</div>
@@ -10,7 +10,7 @@
       </div>
     </div>
 
-    <div class="panel card" style="padding: 14px; border-radius: 16px; max-width: 720px;">
+    <div class="panel card" style="padding: 14px; border-radius: var(--app-radius); max-width: 720px;">
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 14px;">
         <div style="display:flex; flex-direction:column; gap: 10px;">
           <div class="muted" style="font-size: 12px;">Аккаунт</div>

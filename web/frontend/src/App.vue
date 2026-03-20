@@ -11,7 +11,7 @@
           <RouterLink class="rail-btn" to="/chats" title="Чаты">
             <i class="pi pi-comments"></i>
           </RouterLink>
-          <RouterLink v-if="auth.me?.role === 'admin'" class="rail-btn" to="/settings/branding" title="Настройки">
+          <RouterLink v-if="auth.me?.role === 'admin'" class="rail-btn" to="/settings/appearance" title="Настройки">
             <i class="pi pi-cog"></i>
           </RouterLink>
         </div>
@@ -33,7 +33,7 @@
           </div>
         </div>
         <div class="btn-row">
-          <Button :icon="ui.theme === 'dark' ? 'pi pi-moon' : 'pi pi-sun'" text rounded @click="toggleTheme" />
+          <Button :icon="ui.colorMode === 'dark' ? 'pi pi-moon' : 'pi pi-sun'" text rounded @click="toggleTheme" />
           <div v-if="auth.me" class="btn-row">
             <Avatar :label="auth.me.username.slice(0, 1).toUpperCase()" shape="circle" />
             <div style="display:flex; flex-direction:column; line-height: 1.1">
@@ -68,7 +68,7 @@ const route = useRoute()
 const router = useRouter()
 
 onMounted(async () => {
-  ui.applyTheme()
+  ui.applyAll()
   await auth.fetchMe()
   if (!auth.me && route.path !== '/login') {
     router.push('/login')

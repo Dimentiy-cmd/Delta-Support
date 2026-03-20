@@ -114,6 +114,22 @@ class KnowledgeBaseEntry(Model):
     class Meta:
         table = "knowledge_base"
 
+class AIProvider(Model):
+    """Модель провайдера AI"""
+    id = fields.IntField(pk=True)
+    name = fields.CharField(max_length=100)
+    api_type = fields.CharField(max_length=50, default="openai")  # openai, groq, anthropic
+    api_key = fields.CharField(max_length=255)
+    base_url = fields.CharField(max_length=255, null=True)
+    model_name = fields.CharField(max_length=100)
+    is_active = fields.BooleanField(default=True)
+    priority = fields.IntField(default=10)  # Чем меньше, тем выше приоритет
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = "ai_providers"
+
 class Database:
     """Класс для работы с базой данных (Wrapper для Tortoise ORM)"""
     
@@ -180,6 +196,24 @@ class Database:
                         await conn.execute_script(ddl)
                     except Exception:
                         pass
+                # AIProvider table (manual creation if not exists)
+                try:
+                    await conn.execute_script("""
+                        CREATE TABLE IF NOT EXISTS ai_providers (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            name VARCHAR(100) NOT NULL,
+                            api_type VARCHAR(50) NOT NULL DEFAULT 'openai',
+                            api_key VARCHAR(255) NOT NULL,
+                            base_url VARCHAR(255),
+                            model_name VARCHAR(100) NOT NULL,
+                            is_active BOOLEAN NOT NULL DEFAULT 1,
+                            priority INTEGER NOT NULL DEFAULT 10,
+                            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
+                except Exception:
+                    pass
         except Exception:
             pass
     

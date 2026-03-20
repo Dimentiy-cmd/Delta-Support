@@ -11,7 +11,7 @@
       </div>
     </div>
 
-    <div class="panel card" style="padding: 14px; border-radius: 16px;">
+    <div class="panel card" style="padding: 14px; border-radius: var(--app-radius);">
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 14px;">
         <div>
           <div class="muted" style="font-size: 12px; margin-bottom: 6px;">FAQ</div>

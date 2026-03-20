@@ -8,8 +8,8 @@
       <Button v-if="auth.isAdmin" label="Сохранить" icon="pi pi-check" :loading="saving" @click="save" />
     </div>
 
-    <div class="panel card" style="padding: 14px; border-radius: 16px; max-width: 720px;">
-      <div style="display:flex; flex-direction:column; gap: 12px;">
+    <div class="panel card" style="padding: 14px; border-radius: var(--app-radius); max-width: 720px;">
+      <div style="display:flex; flex-direction:column; gap: calc(var(--app-gap) * 0.75);">
         <label style="display:flex; align-items:center; gap:10px;">
           <input v-model="form.keep_forever" type="checkbox" />
           <span>Не удалять медиа</span>

@@ -17,7 +17,7 @@ def _require_admin(user: AdminUser):
 @router.get("")
 async def get_branding(request: Request):
     config = Config()
-    keys = ["brand_name", "brand_tagline", "brand_logo_url"]
+    keys = ["brand_name", "brand_tagline", "brand_logo_url", "brand_accent_color"]
     rows = await SystemConfig.filter(key__in=keys).all()
     values = {r.key: r.value for r in rows}
     logo_url = (values.get("brand_logo_url") or "").strip()
@@ -27,6 +27,7 @@ async def get_branding(request: Request):
         "name": values.get("brand_name") or config.project_name or "Support Desk",
         "tagline": values.get("brand_tagline") or "Админ‑панель поддержки",
         "logo_url": logo_url,
+        "accent_color": values.get("brand_accent_color") or "#22c55e",
     }
 
 
@@ -37,11 +38,13 @@ async def update_branding(request: Request, user: AdminUser = Depends(get_curren
     name = (body.get("name") or "").strip()
     tagline = (body.get("tagline") or "").strip()
     logo_url = (body.get("logo_url") or "").strip()
+    accent_color = (body.get("accent_color") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name required")
     await SystemConfig.update_or_create(key="brand_name", defaults={"value": name, "description": "Название панели"})
     await SystemConfig.update_or_create(key="brand_tagline", defaults={"value": tagline, "description": "Подзаголовок/слоган"})
     await SystemConfig.update_or_create(key="brand_logo_url", defaults={"value": logo_url, "description": "URL логотипа"})
+    await SystemConfig.update_or_create(key="brand_accent_color", defaults={"value": accent_color, "description": "Акцентный цвет"})
     return {"ok": True}
 
 

@@ -8,7 +8,7 @@
       <Button v-if="auth.isAdmin" label="Добавить" icon="pi pi-plus" @click="openCreate = true" />
     </div>
 
-    <div class="panel card" style="padding: 10px; border-radius: 16px;">
+    <div class="panel card" style="padding: 10px; border-radius: var(--app-radius);">
       <DataTable :value="users" responsiveLayout="scroll">
         <Column field="id" header="ID" style="width: 80px" />
         <Column field="username" header="Username" />
@@ -62,8 +62,8 @@
     </Dialog>
 
     <Dialog v-model:visible="openEditDialog" modal header="Пользователь" :style="{ width: '640px' }">
-      <div v-if="editTarget" style="display:flex; flex-direction:column; gap: 12px;">
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+      <div v-if="editTarget" style="display:flex; flex-direction:column; gap: calc(var(--app-gap) * 0.75);">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: calc(var(--app-gap) * 0.75);">
           <div style="display:flex; flex-direction:column; gap: 10px;">
             <div class="muted" style="font-size: 12px;">Username</div>
             <InputText v-model="editUsername" placeholder="Username" />
@@ -77,12 +77,12 @@
             <Button label="Сохранить" icon="pi pi-check" :loading="saving" @click="saveUser" />
           </div>
 
-          <div class="panel" style="border-radius: 16px; padding: 12px;">
+          <div class="panel" style="border-radius: var(--app-radius); padding: 12px;">
             <div class="muted" style="font-size: 12px; margin-bottom: 10px;">Активность (7 дней)</div>
             <div class="muted" style="font-size: 12px;">Последний вход: {{ editTarget.last_login ? pretty(editTarget.last_login) : '—' }}</div>
             <div class="muted" style="font-size: 12px; margin-top: 6px;">Сообщений: {{ stats?.messages_7d ?? '—' }}</div>
             <div v-if="stats" style="margin-top: 10px; display:grid; gap: 6px;">
-              <div v-for="(v, h) in stats.by_hour" :key="h" style="display:grid; grid-template-columns: 44px 1fr 34px; gap: 8px; align-items:center;">
+              <div v-for="(v, h) in stats.by_hour" :key="h" style="display:grid; grid-template-columns: 44px 1fr 34px; gap: calc(var(--app-gap) * 0.5); align-items:center;">
                 <div class="muted" style="font-size: 11px;">{{ pad2(h) }}</div>
                 <div style="height: 8px; border-radius: 999px; background: rgba(148,163,184,0.16); overflow:hidden;">
                   <div :style="{ width: barWidth(v), height: '100%', background: 'rgba(34,197,94,0.65)' }"></div>

@@ -60,6 +60,22 @@ async def main():
         async def startup_event():
             logger.info("Startup: Initializing Database...")
             await db.initialize()
+            
+            # Seed AI Providers from env if empty
+            from modules.database import AIProvider
+            if await AIProvider.all().count() == 0:
+                config = app.state.config
+                if config.telegram_bot_token and config.ai_support_api_key:
+                    logger.info("Seeding AI provider from .env...")
+                    await AIProvider.create(
+                        name="Groq (Auto-migrated)",
+                        api_type="groq",
+                        api_key=config.ai_support_api_key,
+                        model_name=config.groq_models.split(",")[0] if config.groq_models else "llama-3.1-8b-instant",
+                        is_active=True,
+                        priority=10
+                    )
+
             try:
                 await bot.refresh_runtime_settings(force=True)
             except Exception as e:
