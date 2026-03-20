@@ -35,6 +35,18 @@ async def create_entry(request: Request, user: AdminUser = Depends(get_current_u
     if not title or not content:
         raise HTTPException(status_code=400, detail="title/content required")
     created = await KnowledgeBaseEntry.create(title=title, content=content, is_active=True)
+    
+    # Сброс кеша AI при изменении базы знаний
+    try:
+        from modules.ai_support import AISupport
+        from modules.config import Config
+        config = Config()
+        ai = AISupport(config)
+        ai.invalidate_cache()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to invalidate AI cache: {e}")
+    
     return {"ok": True, "id": created.id}
 
 
@@ -54,6 +66,18 @@ async def update_entry(entry_id: int, request: Request, user: AdminUser = Depend
     if not row.title or not row.content:
         raise HTTPException(status_code=400, detail="title/content required")
     await row.save()
+    
+    # Сброс кеша AI при изменении базы знаний
+    try:
+        from modules.ai_support import AISupport
+        from modules.config import Config
+        config = Config()
+        ai = AISupport(config)
+        ai.invalidate_cache()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to invalidate AI cache: {e}")
+    
     return {"ok": True}
 
 
@@ -63,5 +87,17 @@ async def delete_entry(entry_id: int, user: AdminUser = Depends(get_current_user
     deleted = await KnowledgeBaseEntry.filter(id=entry_id).delete()
     if not deleted:
         raise HTTPException(status_code=404, detail="Not found")
+    
+    # Сброс кеша AI при изменении базы знаний
+    try:
+        from modules.ai_support import AISupport
+        from modules.config import Config
+        config = Config()
+        ai = AISupport(config)
+        ai.invalidate_cache()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to invalidate AI cache: {e}")
+    
     return {"ok": True}
 

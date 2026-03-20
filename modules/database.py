@@ -118,12 +118,14 @@ class AIProvider(Model):
     """Модель провайдера AI"""
     id = fields.IntField(pk=True)
     name = fields.CharField(max_length=100)
-    api_type = fields.CharField(max_length=50, default="openai")  # openai, groq, anthropic
-    api_key = fields.CharField(max_length=255)
+    api_type = fields.CharField(max_length=50, default="openai")  # openai, groq, anthropic, gemini, deepseek, mistral, claude
+    api_key = fields.CharField(max_length=255)  # Основной API ключ
+    api_keys = fields.JSONField(null=True)  # Дополнительные API ключи (для балансировки/резерва)
     base_url = fields.CharField(max_length=255, null=True)
     model_name = fields.CharField(max_length=100)
     is_active = fields.BooleanField(default=True)
     priority = fields.IntField(default=10)  # Чем меньше, тем выше приоритет
+    max_requests_per_minute = fields.IntField(default=60)  # Лимит запросов в минуту
     created_at = fields.DatetimeField(auto_now_add=True)
     updated_at = fields.DatetimeField(auto_now=True)
 
@@ -162,60 +164,84 @@ class Database:
         try:
             if db_url.startswith("sqlite"):
                 conn = Tortoise.get_connection("default")
+                
+                # Функция для безопасного добавления колонки
+                async def safe_add_column(table: str, column: str):
+                    try:
+                        # Проверяем существует ли колонка
+                        result = await conn.execute_query(f"PRAGMA table_info({table})")
+                        existing_cols = [row[1] for row in result[1]] if result[1] else []
+                        col_name = column.split()[0]  # Имя колонки до типа данных
+                        if col_name not in existing_cols:
+                            await conn.execute_script(f"ALTER TABLE {table} ADD COLUMN {column}")
+                            logger.info(f"Added column {column} to {table}")
+                    except Exception as e:
+                        logger.debug(f"Column check/add error for {table}.{column}: {e}")
+                
                 # Chat доп. колонки
-                for ddl in [
-                    "ALTER TABLE chats ADD COLUMN user_tg_id INTEGER",
-                    "ALTER TABLE chats ADD COLUMN assigned_admin_id INTEGER",
-                    "ALTER TABLE chats ADD COLUMN last_message_at TEXT",
-                    "ALTER TABLE chats ADD COLUMN topic_id INTEGER",
+                for column in [
+                    "user_tg_id INTEGER",
+                    "assigned_admin_id INTEGER",
+                    "last_message_at TEXT",
+                    "topic_id INTEGER",
                 ]:
-                    try:
-                        await conn.execute_script(ddl)
-                    except Exception:
-                        pass
+                    await safe_add_column("chats", column)
+                
                 # Message доп. колонки
-                for ddl in [
-                    "ALTER TABLE messages ADD COLUMN source TEXT",
-                    "ALTER TABLE messages ADD COLUMN text TEXT",
-                    "ALTER TABLE messages ADD COLUMN media_type TEXT",
-                    "ALTER TABLE messages ADD COLUMN media_file_id TEXT",
-                    "ALTER TABLE messages ADD COLUMN tg_message_id_user INTEGER",
-                    "ALTER TABLE messages ADD COLUMN tg_message_id_group INTEGER",
-                    "ALTER TABLE messages ADD COLUMN admin_user_id INTEGER",
-                    "ALTER TABLE messages ADD COLUMN client_event_id TEXT",
+                for column in [
+                    "source TEXT",
+                    "text TEXT",
+                    "media_type TEXT",
+                    "media_file_id TEXT",
+                    "tg_message_id_user INTEGER",
+                    "tg_message_id_group INTEGER",
+                    "admin_user_id INTEGER",
+                    "client_event_id TEXT",
                 ]:
-                    try:
-                        await conn.execute_script(ddl)
-                    except Exception:
-                        pass
-                for ddl in [
-                    "ALTER TABLE admin_users ADD COLUMN access_start_hour INTEGER",
-                    "ALTER TABLE admin_users ADD COLUMN access_end_hour INTEGER",
+                    await safe_add_column("messages", column)
+                
+                # AdminUser доп. колонки
+                for column in [
+                    "access_start_hour INTEGER",
+                    "access_end_hour INTEGER",
                 ]:
-                    try:
-                        await conn.execute_script(ddl)
-                    except Exception:
-                        pass
+                    await safe_add_column("admin_users", column)
+                
+                # AIProvider доп. колонки (новые)
+                for column in [
+                    "api_keys TEXT",  # JSON для дополнительных ключей
+                    "max_requests_per_minute INTEGER DEFAULT 60",
+                ]:
+                    await safe_add_column("ai_providers", column)
+                
                 # AIProvider table (manual creation if not exists)
                 try:
-                    await conn.execute_script("""
-                        CREATE TABLE IF NOT EXISTS ai_providers (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            name VARCHAR(100) NOT NULL,
-                            api_type VARCHAR(50) NOT NULL DEFAULT 'openai',
-                            api_key VARCHAR(255) NOT NULL,
-                            base_url VARCHAR(255),
-                            model_name VARCHAR(100) NOT NULL,
-                            is_active BOOLEAN NOT NULL DEFAULT 1,
-                            priority INTEGER NOT NULL DEFAULT 10,
-                            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-                        );
+                    result = await conn.execute_query("""
+                        SELECT name FROM sqlite_master WHERE type='table' AND name='ai_providers'
                     """)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                    if not result[1]:
+                        await conn.execute_script("""
+                            CREATE TABLE IF NOT EXISTS ai_providers (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                name VARCHAR(100) NOT NULL,
+                                api_type VARCHAR(50) NOT NULL DEFAULT 'openai',
+                                api_key VARCHAR(255) NOT NULL,
+                                api_keys TEXT,
+                                base_url VARCHAR(255),
+                                model_name VARCHAR(100) NOT NULL,
+                                is_active BOOLEAN NOT NULL DEFAULT 1,
+                                priority INTEGER NOT NULL DEFAULT 10,
+                                max_requests_per_minute INTEGER DEFAULT 60,
+                                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            );
+                        """)
+                        logger.info("Created ai_providers table")
+                except Exception as e:
+                    logger.warning(f"Error checking/creating ai_providers table: {e}")
+                    
+        except Exception as e:
+            logger.warning(f"SQLite schema upgrade error: {e}")
     
     async def create_chat(self, user_id: int, username: str = None, 
                          first_name: str = None, last_name: str = None) -> Chat:

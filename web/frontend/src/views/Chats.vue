@@ -2,7 +2,7 @@
   <div class="chat-layout">
     <div class="panel card chat-list">
       <div class="chat-list-header">
-        <div style="display:flex; flex-direction:column; gap:4px;">
+        <div style="display:flex; flex-direction:column; gap: calc(var(--app-gap)*0.25);">
           <div style="font-weight:800; font-size: 16px;">Чаты</div>
           <div class="muted" style="font-size: 12px;">{{ statusLabel }}</div>
         </div>
@@ -49,15 +49,14 @@
     </div>
 
     <div class="panel card chat-room">
-      <div class="chat-room-header">
-        <div style="display:flex; align-items:center; gap:10px; min-width: 0;">
-          <div v-if="activeChat" class="profile-trigger" @click="profileOpen = true">
-            <img v-if="profile && !avatarFailed" :src="profile.avatar_url" @error="avatarFailed = true" />
-            <Avatar v-else :label="avatarLabel(activeChat)" shape="circle" />
-          </div>
-          <div style="min-width: 0;">
-            <div style="display:flex; align-items:center; gap:10px; flex-wrap: wrap;">
-              <div style="font-weight:800; font-size: 15px;">
+    <div class="chat-room-header">
+      <div style="display:flex; align-items:center; gap: calc(var(--app-gap) * 0.75); min-width: 0;">
+        <div v-if="activeChat" class="profile-trigger" @click="profileOpen = true">
+          <img v-if="profile && !avatarFailed" :src="profile.avatar_url" @error="avatarFailed = true" />
+          <Avatar v-else :label="avatarLabel(activeChat)" shape="circle" />
+        </div>
+        <div style="min-width: 0;">
+          <div style="display:flex; align-items:center; gap: calc(var(--app-gap) * 0.5); flex-wrap: wrap;">              <div style="font-weight:800; font-size: 15px;">
                 {{ activeChat ? titleForChat(activeChat) : 'Выберите чат' }}
               </div>
               <Tag v-if="activeChat" :severity="statusSeverity(activeChat.status)" :value="statusName(activeChat.status)" />
@@ -75,6 +74,15 @@
             :label="connectLabel"
             :severity="activeChat.status === 'waiting_manager' ? 'secondary' : 'success'"
             @click="toggleConnect"
+          />
+          <Button
+            v-if="auth.isAdmin"
+            size="small"
+            icon="pi pi-trash"
+            severity="danger"
+            outlined
+            title="Удалить диалог полностью"
+            @click="deleteChat"
           />
         </div>
       </div>
@@ -549,6 +557,28 @@ async function toggleConnect() {
     await backToAi()
   } else {
     await joinActive()
+  }
+}
+
+async function deleteChat() {
+  if (!activeChat.value) return
+  if (!confirm('Вы уверены, что хотите полностью удалить этот диалог и всю его историю? Это действие нельзя отменить.')) return
+  
+  try {
+    const res = await fetch(`/api/chats/${activeChat.value.id}`, {
+      method: 'DELETE',
+      credentials: 'include'
+    })
+    if (res.ok) {
+      const idx = chats.value.findIndex(c => c.id === activeChat.value?.id)
+      if (idx !== -1) chats.value.splice(idx, 1)
+      activeId.value = null
+      messages.value = []
+    } else {
+      alert('Ошибка при удалении диалога')
+    }
+  } catch (e) {
+    alert('Ошибка при удалении диалога')
   }
 }
 

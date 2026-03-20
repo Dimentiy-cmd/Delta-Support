@@ -60,7 +60,7 @@
 
         <div class="grid-form">
           <div class="field full-width">
-            <div style="display:flex; align-items:center; gap:10px; padding: 12px; background: color-mix(in srgb, var(--app-brand) 0.05); border-radius: var(--app-radius); border: 1px solid color-mix(in srgb, var(--app-brand) 0.1);">
+            <div style="display:flex; align-items:center; gap:10px; padding: 12px; background: color-mix(in srgb, var(--app-brand) 5%, transparent); border-radius: var(--app-radius); border: 1px solid color-mix(in srgb, var(--app-brand) 10%, transparent);">
               <Checkbox v-model="form.ai_support_enabled" :binary="true" inputId="ai_enabled" />
               <label for="ai_enabled" style="cursor: pointer; font-weight: 600;">AI поддержка включена</label>
             </div>
@@ -74,33 +74,12 @@
             <Textarea v-model="form.ai_system_prompt" rows="8" style="width: 100%; min-height: 200px;" />
           </div>
 
-          <!-- Embedded AI Providers Section -->
+          <!-- Link to AI Providers Page -->
           <div class="field full-width" style="margin-top: 10px;">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 12px;">
-              <div style="font-size: 14px; font-weight: 700;">Активные провайдеры</div>
-              <Button label="Добавить" icon="pi pi-plus" size="small" text @click="openCreateModal" />
-            </div>
-
-            <div v-if="providers.length === 0" style="padding: calc(var(--app-padding) * 1.25); text-align: center; background: rgba(148, 163, 184, 0.05); border-radius: var(--app-radius); border: 1px dashed var(--app-border);">
-              <div class="muted" style="font-size: 13px;">Нет настроенных провайдеров. AI не будет работать.</div>
-            </div>
-
-            <div class="providers-list">
-              <div v-for="p in providers" :key="p.id" class="provider-item" :class="{ 'p-off': !p.is_active }">
-                <div class="p-info">
-                  <div class="p-name">
-                    <i :class="getProviderIcon(p.api_type)" style="margin-right: 6px; color: var(--app-brand);"></i>
-                    {{ p.name }} 
-                    <span style="font-size: 10px; font-weight: normal; opacity: 0.7;">({{ p.model_name }})</span>
-                  </div>
-                  <div class="p-meta">Приоритет: {{ p.priority }} • {{ p.is_active ? 'Активен' : 'Отключен' }}</div>
-                </div>
-                <div class="p-actions">
-                  <Button icon="pi pi-pencil" text rounded size="small" @click="editProvider(p)" />
-                  <Button icon="pi pi-trash" text rounded size="small" severity="danger" @click="deleteProvider(p.id)" />
-                </div>
-              </div>
-            </div>
+            <RouterLink to="/settings/ai-providers" style="display:flex; align-items:center; justify-content:center; gap:8px; padding: 16px; background: color-mix(in srgb, var(--app-brand) 8%, transparent); border: 1px dashed var(--app-brand); border-radius: var(--app-radius); color: var(--app-brand); text-decoration:none; font-weight: 600;">
+              <i class="pi pi-external-link"></i>
+              Управление AI провайдерами
+            </RouterLink>
           </div>
         </div>
       </div>
@@ -109,48 +88,6 @@
         {{ err }}
       </div>
     </div>
-
-    <!-- Provider Modal -->
-    <Dialog v-model:visible="showModal" :header="isEditing ? 'Редактировать провайдера' : 'Новый провайдер'" modal :style="{ width: '420px' }">
-      <div class="form-grid-modal">
-        <div class="field">
-          <label class="muted label-small">Название</label>
-          <InputText v-model="pForm.name" style="width: 100%" placeholder="Например: DeepSeek" />
-        </div>
-        <div class="field">
-          <label class="muted label-small">Тип API</label>
-          <Dropdown v-model="pForm.api_type" :options="apiTypes" optionLabel="label" optionValue="value" style="width: 100%" />
-        </div>
-        <div class="field">
-          <label class="muted label-small">Base URL</label>
-          <InputText v-model="pForm.base_url" style="width: 100%" placeholder="https://api.deepseek.com/v1" />
-        </div>
-        <div class="field">
-          <label class="muted label-small">Модель</label>
-          <InputText v-model="pForm.model_name" style="width: 100%" placeholder="deepseek-chat" />
-        </div>
-        <div class="field">
-          <label class="muted label-small">API Ключ</label>
-          <Password v-model="pForm.api_key" style="width: 100%" :feedback="false" toggleMask inputStyle="width: 100%" placeholder="sk-..." />
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: calc(var(--app-gap) * 0.75);">
-          <div class="field">
-            <label class="muted label-small">Приоритет</label>
-            <InputText v-model.number="pForm.priority" type="number" style="width: 100%" />
-          </div>
-          <div class="field" style="display: flex; align-items: flex-end; padding-bottom: 8px;">
-            <div style="display:flex; align-items:center; gap:8px;">
-              <Checkbox v-model="pForm.is_active" :binary="true" inputId="p_active" />
-              <label for="p_active" style="font-size: 13px; cursor: pointer;">Активен</label>
-            </div>
-          </div>
-        </div>
-      </div>
-      <template #footer>
-        <Button label="Отмена" text @click="showModal = false" />
-        <Button :label="isEditing ? 'Сохранить' : 'Создать'" :loading="modalLoading" @click="saveProvider" />
-      </template>
-    </Dialog>
   </div>
 </template>
 
@@ -160,9 +97,6 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import Checkbox from 'primevue/checkbox'
-import Password from 'primevue/password'
-import Dropdown from 'primevue/dropdown'
-import Dialog from 'primevue/dialog'
 import { useAuthStore } from '@/stores/auth'
 import HelpTip from '@/components/HelpTip.vue'
 
@@ -181,36 +115,12 @@ const form = ref({
   ai_support_enabled: true
 })
 
-// Providers data
-const providers = ref<any[]>([])
-const showModal = ref(false)
-const isEditing = ref(false)
-const modalLoading = ref(false)
-const currentProviderId = ref<number | null>(null)
-
-const pForm = ref({
-  name: '',
-  api_type: 'openai',
-  api_key: '',
-  base_url: '',
-  model_name: '',
-  is_active: true,
-  priority: 10
-})
-
-const apiTypes = [
-  { label: 'OpenAI Compatible', value: 'openai' },
-  { label: 'Groq API', value: 'groq' },
-  { label: 'Anthropic', value: 'anthropic' }
-]
-
 const welcomeHelp = 'Переменные: {first_name}, {username}, {project_name}, {project_bot_link}'
 const promptHelp = 'Переменные: {project_name}, {service_context}, {first_name}, {user_id}'
 
 async function load() {
   err.value = ''
   try {
-    // Load bot settings
     const bRes = await fetch('/api/settings/bot', { credentials: 'include' })
     if (bRes.ok) {
       const bData = await bRes.json()
@@ -220,10 +130,6 @@ async function load() {
       }
       form.value = { ...form.value, ...incoming }
     }
-
-    // Load providers
-    const pRes = await fetch('/api/ai/providers', { credentials: 'include' })
-    if (pRes.ok) providers.value = await pRes.json()
   } catch (e) {
     err.value = 'Ошибка загрузки данных'
   }
@@ -246,53 +152,6 @@ async function saveAll() {
   } finally {
     saving.value = false
   }
-}
-
-// Provider methods
-const openCreateModal = () => {
-  isEditing.value = false
-  currentProviderId.value = null
-  pForm.value = { name: '', api_type: 'openai', api_key: '', base_url: '', model_name: '', is_active: true, priority: 10 }
-  showModal.value = true
-}
-
-const editProvider = (p: any) => {
-  isEditing.value = true
-  currentProviderId.value = p.id
-  pForm.value = { ...p, api_key: '' }
-  showModal.value = true
-}
-
-const saveProvider = async () => {
-  if (!pForm.value.name || !pForm.value.model_name) return
-  modalLoading.value = true
-  try {
-    const url = isEditing.value ? `/api/ai/providers/${currentProviderId.value}` : '/api/ai/providers'
-    const res = await fetch(url, {
-      method: isEditing.value ? 'PATCH' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify(pForm.value)
-    })
-    if (res.ok) {
-      showModal.value = false
-      await load()
-    }
-  } finally {
-    modalLoading.value = false
-  }
-}
-
-const deleteProvider = async (id: number) => {
-  if (!confirm('Удалить провайдера?')) return
-  const res = await fetch(`/api/ai/providers/${id}`, { method: 'DELETE', credentials: 'include' })
-  if (res.ok) await load()
-}
-
-const getProviderIcon = (type: string) => {
-  if (type === 'groq') return 'pi pi-bolt'
-  if (type === 'openai') return 'pi pi-prime'
-  return 'pi pi-server'
 }
 
 onMounted(load)
