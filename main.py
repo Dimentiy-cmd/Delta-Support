@@ -54,17 +54,20 @@ async def main():
         app.state.db = db
         app.state.config = config
         bot.ws_manager = getattr(app.state, "ws_manager", None)
-        
-        # Setup startup/shutdown events
-        @app.on_event("startup")
-        async def startup_event():
+
+        # Lifespan вместо deprecated on_event: новые версии Starlette
+        # не выполняют on_event, из-за чего БД не инициализировалась
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def lifespan(_app):
+            # --- startup ---
             logger.info("Startup: Initializing Database...")
             await db.initialize()
-            
+
             # Seed AI Providers from env if empty
             from modules.database import AIProvider
             if await AIProvider.all().count() == 0:
-                config = app.state.config
                 if config.telegram_bot_token and config.ai_support_api_key:
                     logger.info("Seeding AI provider from .env...")
                     await AIProvider.create(
@@ -98,14 +101,17 @@ async def main():
                 pass
             logger.info("Startup: Starting Bot Polling...")
             await bot.start_polling()
-            
-        @app.on_event("shutdown")
-        async def shutdown_event():
+
+            yield
+
+            # --- shutdown ---
             logger.info("Shutdown: Stopping Bot...")
             await bot.stop()
             logger.info("Shutdown: Closing Database...")
             await Tortoise.close_connections()
-            
+
+        app.router.lifespan_context = lifespan
+
         # Запуск сервера
         logger.info(f"Starting Web Admin on port {config.app_port}...")
         

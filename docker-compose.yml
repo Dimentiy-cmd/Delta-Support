@@ -9,7 +9,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5433:5432"
+      # Только localhost: наружу порт БД не открываем (были попытки подбора пароля из интернета)
+      - "127.0.0.1:5433:5432"
     networks:
       - delta-network
     restart: unless-stopped
@@ -35,7 +36,8 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - "6380:6379"
+      # Только localhost
+      - "127.0.0.1:6380:6379"
     networks:
       - delta-network
     restart: unless-stopped
