@@ -13,6 +13,8 @@
           <RouterLink class="s-item" to="/settings/ai"><i class="pi pi-microchip" />AI контекст</RouterLink>
           <RouterLink class="s-item" to="/settings/ai-providers"><i class="pi pi-server" />AI Провайдеры</RouterLink>
           <RouterLink class="s-item" to="/settings/kb"><i class="pi pi-book" />База знаний</RouterLink>
+          <RouterLink class="s-item" to="/settings/integration"><i class="pi pi-link" />Интеграция и бэкап</RouterLink>
+          <RouterLink class="s-item" to="/settings/automation"><i class="pi pi-clock" />Автоматизация</RouterLink>
           <RouterLink class="s-item" to="/settings/media"><i class="pi pi-images" />Медиа</RouterLink>
           <RouterLink class="s-item" to="/settings/profile"><i class="pi pi-user" />Профиль</RouterLink>
           <RouterLink class="s-item" to="/settings/users"><i class="pi pi-users" />Пользователи</RouterLink>

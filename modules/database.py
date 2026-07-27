@@ -27,6 +27,13 @@ class Chat(Model):
     assigned_admin_id = fields.IntField(null=True)
     last_message_at = fields.DatetimeField(null=True)
     topic_id = fields.BigIntField(null=True)
+    # AI отключен менеджером для этого чата (/ai off)
+    ai_disabled = fields.BooleanField(default=False)
+    # Автозакрытие: когда отправлено напоминание клиенту
+    reminder_sent_at = fields.DatetimeField(null=True)
+    # SLA: с какого момента чат ждет менеджера
+    waiting_since = fields.DatetimeField(null=True)
+    sla_notified = fields.BooleanField(default=False)
     
     # Reverse relations
     messages: fields.ReverseRelation["Message"]
@@ -184,6 +191,10 @@ class Database:
                     "assigned_admin_id INTEGER",
                     "last_message_at TEXT",
                     "topic_id INTEGER",
+                    "ai_disabled INTEGER DEFAULT 0",
+                    "reminder_sent_at TEXT",
+                    "waiting_since TEXT",
+                    "sla_notified INTEGER DEFAULT 0",
                 ]:
                     await safe_add_column("chats", column)
                 
@@ -242,7 +253,24 @@ class Database:
                     
         except Exception as e:
             logger.warning(f"SQLite schema upgrade error: {e}")
-    
+
+        # Апгрейд схемы для PostgreSQL (новые колонки, generate_schemas их не добавляет)
+        try:
+            if db_url.startswith("postgres"):
+                conn = Tortoise.get_connection("default")
+                for table, column in [
+                    ("chats", "ai_disabled BOOLEAN DEFAULT FALSE"),
+                    ("chats", "reminder_sent_at TIMESTAMPTZ"),
+                    ("chats", "waiting_since TIMESTAMPTZ"),
+                    ("chats", "sla_notified BOOLEAN DEFAULT FALSE"),
+                ]:
+                    try:
+                        await conn.execute_script(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column}")
+                    except Exception as e:
+                        logger.debug(f"PG column add error {table}: {e}")
+        except Exception as e:
+            logger.warning(f"Postgres schema upgrade error: {e}")
+
     async def create_chat(self, user_id: int, username: str = None, 
                          first_name: str = None, last_name: str = None) -> Chat:
         """Создать новый чат"""
@@ -284,8 +312,11 @@ class Database:
             source=source,
             text=content
         )
-        # Обновляем last_message_at
-        await Chat.filter(id=chat_id).update(last_message_at=message.created_at)
+        # Обновляем last_message_at; ответ клиента сбрасывает таймер напоминания
+        chat_update = {"last_message_at": message.created_at}
+        if message_type == "user":
+            chat_update["reminder_sent_at"] = None
+        await Chat.filter(id=chat_id).update(**chat_update)
         return message
     
     async def get_chat_messages(self, chat_id: int, limit: int = 50) -> List[Message]:
@@ -294,10 +325,19 @@ class Database:
     
     async def update_chat_status(self, chat_id: int, status: str, manager_id: int = None):
         """Обновить статус чата"""
+        from datetime import datetime, timezone
         update_data = {"status": status}
         if manager_id is not None:
             update_data["manager_id"] = manager_id
-        
+        # Таймеры SLA и автозакрытия
+        if status == "waiting_manager":
+            update_data["waiting_since"] = datetime.now(timezone.utc)
+            update_data["sla_notified"] = False
+        else:
+            update_data["waiting_since"] = None
+            update_data["sla_notified"] = False
+            update_data["reminder_sent_at"] = None
+
         await Chat.filter(id=chat_id).update(**update_data)
     
     async def create_manager_notification(self, chat_id: int, manager_id: int) -> ManagerNotification:
