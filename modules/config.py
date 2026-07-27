@@ -66,6 +66,11 @@ class Config(BaseSettings):
     telegram_group_mode: bool = Field(default=False, alias="TELEGRAM_GROUP_MODE")
     telegram_support_group_id: Optional[int] = Field(default=None, alias="TELEGRAM_SUPPORT_GROUP_ID")
     
+    # Support API основного сервера (инфо о пользователе по telegram_id)
+    support_api_enabled: bool = Field(default=False, alias="SUPPORT_API_ENABLED")
+    support_api_url: str = Field(default="", alias="SUPPORT_API_URL")
+    support_api_token: str = Field(default="", alias="SUPPORT_API_TOKEN")
+
     # Project Databases
     project_db_1: Optional[str] = Field(default=None, alias="PROJECT_DB_1")
     project_db_2: Optional[str] = Field(default=None, alias="PROJECT_DB_2")

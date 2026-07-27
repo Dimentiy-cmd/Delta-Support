@@ -24,6 +24,7 @@ from typing import Optional
 from modules.config import Config
 from modules.database import Database, SystemConfig
 from modules.ai_support import AISupport
+from modules.user_info import UserInfoService
 
 
 class SupportBot:
@@ -33,6 +34,7 @@ class SupportBot:
         self.config = config
         self.db = database
         self.ai = AISupport(config)
+        self.user_info = UserInfoService(config)
         self.application = None
         self.redis = None
         self.ws_manager = None
@@ -54,6 +56,23 @@ class SupportBot:
             "{project_description}"
         )
         self._runtime_settings_ts = 0.0
+        # Бан-лист клиентов (tg id), управляется /ban и /unban
+        self._banned_users = set()
+        # Автоматизация жизненного цикла чатов
+        self._auto_close_enabled = False
+        self._auto_close_reminder_minutes = 360   # напоминание клиенту после N минут тишины
+        self._auto_close_after_minutes = 720      # закрытие через M минут после напоминания
+        self._auto_close_reminder_text = (
+            "👋 Ваш вопрос ещё актуален? Если да — просто ответьте на это сообщение. "
+            "Если ответа не будет, чат будет автоматически закрыт."
+        )
+        self._auto_close_text = (
+            "💬 Чат закрыт автоматически из-за отсутствия активности. "
+            "Если у вас остались вопросы — просто напишите нам снова."
+        )
+        self._sla_ping_enabled = True
+        self._sla_ping_minutes = 15               # повторный пинг, если запрос никто не взял
+        self._lifecycle_task = None
         try:
             from chatgpt_md_converter import telegram_format as _md_to_html
             self._md_to_html = _md_to_html
@@ -81,6 +100,14 @@ class SupportBot:
             "project_bot_link",
             "project_owner_contacts",
             "bot_welcome_message",
+            "banned_users",
+            "auto_close_enabled",
+            "auto_close_reminder_minutes",
+            "auto_close_after_minutes",
+            "auto_close_reminder_text",
+            "auto_close_text",
+            "sla_ping_enabled",
+            "sla_ping_minutes",
         ]
         rows = await SystemConfig.filter(key__in=keys).all()
         values = {r.key: (r.value or "") for r in rows}
@@ -122,6 +149,32 @@ class SupportBot:
         if welcome and welcome.strip():
             self._welcome_template = welcome
 
+        # Бан-лист (JSON-массив tg id)
+        try:
+            banned_raw = (values.get("banned_users") or "").strip()
+            self._banned_users = set(int(x) for x in json.loads(banned_raw)) if banned_raw else set()
+        except Exception:
+            self._banned_users = set()
+
+        # Автоматизация
+        def _as_bool(key, default):
+            raw = (values.get(key) or "").strip()
+            return raw.lower() in ["1", "true", "yes", "y", "on"] if raw else default
+
+        def _as_int(key, default, minimum=1):
+            raw = (values.get(key) or "").strip()
+            return max(minimum, int(raw)) if raw.lstrip("-").isdigit() else default
+
+        self._auto_close_enabled = _as_bool("auto_close_enabled", False)
+        self._auto_close_reminder_minutes = _as_int("auto_close_reminder_minutes", 360, minimum=5)
+        self._auto_close_after_minutes = _as_int("auto_close_after_minutes", 720, minimum=5)
+        self._sla_ping_enabled = _as_bool("sla_ping_enabled", True)
+        self._sla_ping_minutes = _as_int("sla_ping_minutes", 15, minimum=1)
+        if (values.get("auto_close_reminder_text") or "").strip():
+            self._auto_close_reminder_text = values["auto_close_reminder_text"].strip()
+        if (values.get("auto_close_text") or "").strip():
+            self._auto_close_text = values["auto_close_text"].strip()
+
         if not self._group_mode_enabled:
             self._group_id = None
 
@@ -151,6 +204,12 @@ class SupportBot:
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("chats", self.chats_command))
         self.application.add_handler(CommandHandler("close", self.close_chat_command))
+        self.application.add_handler(CommandHandler("info", self.info_command))
+        self.application.add_handler(CommandHandler("ai", self.ai_command))
+        self.application.add_handler(CommandHandler("summary", self.summary_command))
+        self.application.add_handler(CommandHandler("ban", self.ban_command))
+        self.application.add_handler(CommandHandler("unban", self.unban_command))
+        self.application.add_handler(CommandHandler("note", self.note_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
         self.application.add_handler(MessageHandler(filters.StatusUpdate.ALL, self.handle_service_update))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_any_message))
@@ -171,10 +230,15 @@ class SupportBot:
         await self.application.initialize()
         await self.application.start()
         await self.application.updater.start_polling(drop_pending_updates=True)
-    
+        # Фоновый цикл автоматизации (автозакрытие, SLA-пинги)
+        self._lifecycle_task = asyncio.create_task(self._lifecycle_loop())
+
     async def stop(self):
         """Остановка бота"""
         logger.info("Stopping bot...")
+        if self._lifecycle_task:
+            self._lifecycle_task.cancel()
+            self._lifecycle_task = None
         if self.application.updater:
             await self.application.updater.stop()
         if self.application:
@@ -199,7 +263,11 @@ class SupportBot:
         """Обработчик команды /start"""
         user = update.effective_user
         user_id = user.id
-        
+
+        await self.refresh_runtime_settings()
+        if user_id in self._banned_users and user_id not in self.config.get_all_staff_ids():
+            return
+
         # Проверяем, является ли пользователь админом или менеджером
         if user_id in self.config.get_all_staff_ids():
             keyboard = [
@@ -525,13 +593,13 @@ class SupportBot:
             logger.error(f"Error closing chat from message: {e}")
             await message.reply_text(f"❌ Ошибка при закрытии чата: {str(e)}")
     
-    async def _close_chat(self, chat_id: int, user_id: int):
+    async def _close_chat(self, chat_id: int, user_id: int, notify_text: str = None, reason: str = None):
         """Внутренняя функция закрытия чата"""
         chat = await self.db.get_chat_by_id(chat_id)
-        
+
         if not chat:
             raise ValueError(f"Чат #{chat_id} не найден.")
-        
+
         await self.db.update_chat_status(chat_id, "closed")
         try:
             chat.status = "closed"
@@ -540,7 +608,8 @@ class SupportBot:
 
         sysmsg = None
         try:
-            sysmsg = await self.db.add_message(chat_id, chat.user_id, "Чат закрыт. AI активирован", "system")
+            sys_text = f"Чат закрыт ({reason}). AI активирован" if reason else "Чат закрыт. AI активирован"
+            sysmsg = await self.db.add_message(chat_id, chat.user_id, sys_text, "system")
         except Exception as e:
             logger.warning(f"Failed to save system message on close: {e}")
 
@@ -569,7 +638,7 @@ class SupportBot:
         try:
             await self.application.bot.send_message(
                 chat_id=chat.user_id,
-                text="💬 Ваш чат с поддержкой был закрыт. Если у вас есть еще вопросы, напишите /start"
+                text=notify_text or "💬 Ваш чат с поддержкой был закрыт. Если у вас есть еще вопросы, напишите /start"
             )
         except Exception as e:
             logger.error(f"Error notifying user about closed chat: {e}")
@@ -580,7 +649,13 @@ class SupportBot:
         if not chat:
             await update.message.reply_text("❌ Чат не найден.")
             return
-        await self.db.update_chat_status(chat_id, "active", manager_id=None)
+        await self.db.update_chat_status(chat_id, "active")
+        # Сбрасываем менеджера и возвращаем AI (мог быть отключен через /ai off)
+        try:
+            from modules.database import Chat as ChatModel
+            await ChatModel.filter(id=chat_id).update(manager_id=None, ai_disabled=False)
+        except Exception:
+            pass
         try:
             chat.status = "active"
         except Exception:
@@ -696,6 +771,12 @@ class SupportBot:
         elif data.startswith("close_chat_"):
             chat_id = int(data.replace("close_chat_", ""))
             await self.close_chat_from_button(query, chat_id, user_id)
+        elif data.startswith("take_chat_"):
+            chat_id = int(data.replace("take_chat_", ""))
+            await self.take_chat(query, chat_id, user_id)
+        elif data.startswith("info_chat_"):
+            chat_id = int(data.replace("info_chat_", ""))
+            await self.send_client_card(query, chat_id)
     
     async def show_chat_details(self, query, chat_id: int):
         """Показать детали чата"""
@@ -971,21 +1052,23 @@ class SupportBot:
                 pass
             return
 
-        summary = None
+        # AI-сводка проблемы по истории диалога
+        summary = await self._build_chat_summary(chat)
+
+        # Карточка клиента из Support API (баланс, подписки, ключи)
+        client_card = None
         try:
-            messages = await self.db.get_chat_messages(chat_id, limit=10)
-            last_user = next((m.content for m in reversed(messages) if m.message_type == "user"), None)
-            if last_user and self.config.ai_support_enabled:
-                prompt = f"Кратко, одной фразой опиши, чего хочет пользователь: {last_user}"
-                ctx = {"user_id": chat.user_id, "username": chat.username, "first_name": chat.first_name, "last_name": chat.last_name}
-                hist = [{"role":"user" if m.message_type=="user" else "assistant","message":m.content} for m in messages]
-                summary = await self.ai.get_ai_answer(prompt, ctx, hist)
+            api_data = await self.user_info.get_user_info(chat.user_id, force=True)
+            if api_data:
+                client_card = self.user_info.format_for_manager(api_data)
         except Exception as e:
-            logger.warning(f"Failed to build AI summary: {e}")
+            logger.warning(f"Support API card failed for user {chat.user_id}: {e}")
 
         sys_text = "🟡 Клиент запросил подключение менеджера"
         if summary:
-            sys_text = f"{sys_text}\nКратко: {summary}"
+            sys_text = f"{sys_text}\n\n📝 Сводка: {summary}"
+        if client_card:
+            sys_text = f"{sys_text}\n\n{client_card}"
         sysmsg = None
         try:
             sysmsg = await self.db.add_message(chat_id, chat.user_id, sys_text, "system")
@@ -1029,8 +1112,16 @@ class SupportBot:
                         else:
                             raise
                     base = f"🟡 Пользователь запросил подключение менеджера\nПользователь: @{chat.username or 'N/A'}\nID: {chat.user_id}\nЧат: #{chat.id}"
-                    text = base if not summary else f"{base}\nКратко: {summary}"
-                    await self.application.bot.send_message(chat_id=self._group_id, text=self._md_to_html(text), message_thread_id=thread_id, disable_notification=False, parse_mode=ParseMode.HTML)
+                    if summary:
+                        base = f"{base}\n\n📝 Сводка: {summary}"
+                    if client_card:
+                        base = f"{base}\n\n{client_card}"
+                    text = base
+                    take_keyboard = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🙋 Взять в работу", callback_data=f"take_chat_{chat.id}"),
+                        InlineKeyboardButton("👤 Инфо", callback_data=f"info_chat_{chat.id}"),
+                    ]])
+                    await self.application.bot.send_message(chat_id=self._group_id, text=self._md_to_html(text), message_thread_id=thread_id, disable_notification=False, parse_mode=ParseMode.HTML, reply_markup=take_keyboard)
             except Exception as e:
                 logger.warning(f"Failed to update group topic on manager request: {e}")
         
@@ -1055,6 +1146,10 @@ class SupportBot:
                 
                 # Отправляем уведомление
                 keyboard = [
+                    [
+                        InlineKeyboardButton("🙋 Взять в работу", callback_data=f"take_chat_{chat_id}"),
+                        InlineKeyboardButton("👤 Инфо", callback_data=f"info_chat_{chat_id}"),
+                    ],
                     [InlineKeyboardButton("Просмотреть чат", callback_data=f"view_chat_{chat_id}")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1066,6 +1161,10 @@ class SupportBot:
                     f"Пользователь: {user_info}\n"
                     f"Имя: {chat.first_name or 'N/A'}"
                 )
+                if summary:
+                    notification_text += f"\n\n📝 Сводка: {summary}"
+                if client_card:
+                    notification_text += f"\n\n{client_card}"
                 
                 await self.application.bot.send_message(
                     chat_id=staff_id,
@@ -1089,7 +1188,458 @@ class SupportBot:
                 )
         except Exception as e:
             logger.error(f"Error editing message: {e}")
-    
+
+    # ------------------------------------------------------------------
+    # Управление из группы: команды и кнопки
+    # ------------------------------------------------------------------
+
+    async def _build_chat_summary(self, chat) -> Optional[str]:
+        """AI-сводка диалога для менеджера"""
+        try:
+            messages = await self.db.get_chat_messages(chat.id, limit=20)
+            last_user = next((m.content for m in reversed(messages) if m.message_type == "user"), None)
+            if not last_user:
+                return None
+            prompt = (
+                "Составь краткую сводку для менеджера поддержки по этому диалогу. "
+                "2-3 предложения: какая у клиента проблема, что уже пробовали/отвечал бот, что вероятно нужно сделать менеджеру. "
+                "Пиши сухо и по делу, без приветствий и обращений к клиенту."
+            )
+            ctx = {"user_id": chat.user_id, "username": chat.username, "first_name": chat.first_name, "last_name": chat.last_name}
+            hist = [{"role": "user" if m.message_type == "user" else "assistant", "message": m.content} for m in messages]
+            return await self.ai.get_ai_answer(prompt, ctx, hist)
+        except Exception as e:
+            logger.warning(f"Failed to build AI summary: {e}")
+            return None
+
+    async def _chat_from_topic(self, update: Update):
+        """Определить чат клиента по топику группы (для команд внутри топика)"""
+        await self.refresh_runtime_settings()
+        if not (self._group_id and update.effective_chat and update.effective_chat.id == self._group_id):
+            return None
+        thread_id = update.message.message_thread_id if update.message else None
+        if not thread_id:
+            return None
+        chat_id = None
+        if self.redis:
+            try:
+                cid = self.redis.get(f"group_topic:thread:{thread_id}")
+                chat_id = int(cid) if cid else None
+            except Exception:
+                chat_id = None
+        if chat_id:
+            return await self.db.get_chat_by_id(chat_id)
+        # Fallback: привязка топика хранится и в БД
+        from modules.database import Chat as ChatModel
+        return await ChatModel.filter(topic_id=thread_id).order_by("-id").first()
+
+    async def _resolve_command_chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Чат для команды: топик группы или аргумент <chat_id> в личке"""
+        chat = await self._chat_from_topic(update)
+        if chat:
+            return chat
+        if context.args and str(context.args[0]).isdigit():
+            return await self.db.get_chat_by_id(int(context.args[0]))
+        return None
+
+    async def info_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/info — карточка клиента из Support API (в топике или /info <chat_id>)"""
+        if update.effective_user.id not in self.config.get_all_staff_ids():
+            return
+        chat = await self._resolve_command_chat(update, context)
+        if not chat:
+            await update.message.reply_text("❌ Используйте команду в топике клиента или укажите ID: /info <chat_id>")
+            return
+        card = None
+        try:
+            data = await self.user_info.get_user_info(chat.user_id, force=True)
+            if data:
+                card = self.user_info.format_for_manager(data)
+        except Exception as e:
+            logger.warning(f"/info failed for chat {chat.id}: {e}")
+        if card:
+            await update.message.reply_text(card)
+        else:
+            await update.message.reply_text(
+                "❌ Данные не получены: интеграция Support API выключена или клиент не найден в системе."
+            )
+
+    async def ai_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/ai on|off — включить/отключить AI для чата"""
+        if update.effective_user.id not in self.config.get_all_staff_ids():
+            return
+        args = [a.lower() for a in (context.args or [])]
+        mode = args[0] if args and args[0] in ("on", "off") else None
+        if mode is None:
+            await update.message.reply_text("Использование: /ai on|off — включить/отключить AI в этом чате")
+            return
+        chat = await self._chat_from_topic(update)
+        if not chat and len(args) > 1 and args[1].isdigit():
+            chat = await self.db.get_chat_by_id(int(args[1]))
+        if not chat:
+            await update.message.reply_text("❌ Используйте команду в топике клиента или укажите ID: /ai on|off <chat_id>")
+            return
+        disabled = mode == "off"
+        from modules.database import Chat as ChatModel
+        await ChatModel.filter(id=chat.id).update(ai_disabled=disabled)
+        note = "🔇 AI отключен менеджером для этого чата" if disabled else "🔔 AI снова включен для этого чата"
+        try:
+            await self.db.add_message(chat.id, chat.user_id, note, "system")
+        except Exception:
+            pass
+        await update.message.reply_text(f"{note} (чат #{chat.id})")
+
+    async def summary_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/summary — AI-сводка диалога"""
+        if update.effective_user.id not in self.config.get_all_staff_ids():
+            return
+        chat = await self._resolve_command_chat(update, context)
+        if not chat:
+            await update.message.reply_text("❌ Используйте команду в топике клиента или укажите ID: /summary <chat_id>")
+            return
+        summary = await self._build_chat_summary(chat)
+        if summary:
+            await update.message.reply_text(f"📝 Сводка по чату #{chat.id}:\n{summary}")
+        else:
+            await update.message.reply_text("❌ Не удалось построить сводку (нет сообщений клиента или AI недоступен).")
+
+    async def _save_banned_users(self):
+        try:
+            await SystemConfig.update_or_create(
+                key="banned_users",
+                defaults={"value": json.dumps(sorted(self._banned_users)), "description": "Забаненные клиенты (tg id)"},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save banned users: {e}")
+
+    async def _resolve_ban_target(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Целевой tg id для /ban и /unban: из топика или аргумента"""
+        chat = await self._chat_from_topic(update)
+        if chat:
+            return chat, chat.user_id
+        if context.args and str(context.args[0]).lstrip("-").isdigit():
+            return None, int(context.args[0])
+        return None, None
+
+    async def ban_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/ban — заблокировать клиента (бот игнорирует его сообщения)"""
+        if update.effective_user.id not in self.config.get_all_staff_ids():
+            return
+        chat, target = await self._resolve_ban_target(update, context)
+        if not target:
+            await update.message.reply_text("❌ Используйте команду в топике клиента или укажите ID: /ban <tg_id>")
+            return
+        if target in self.config.get_all_staff_ids():
+            await update.message.reply_text("❌ Нельзя заблокировать сотрудника.")
+            return
+        self._banned_users.add(target)
+        await self._save_banned_users()
+        if chat:
+            try:
+                await self.db.add_message(chat.id, chat.user_id, "🚫 Клиент заблокирован менеджером", "system")
+            except Exception:
+                pass
+        await update.message.reply_text(f"🚫 Клиент {target} заблокирован. Сообщения игнорируются. Разблокировать: /unban")
+
+    async def unban_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/unban — разблокировать клиента"""
+        if update.effective_user.id not in self.config.get_all_staff_ids():
+            return
+        chat, target = await self._resolve_ban_target(update, context)
+        if not target:
+            await update.message.reply_text("❌ Используйте команду в топике клиента или укажите ID: /unban <tg_id>")
+            return
+        self._banned_users.discard(target)
+        await self._save_banned_users()
+        if chat:
+            try:
+                await self.db.add_message(chat.id, chat.user_id, "✅ Клиент разблокирован менеджером", "system")
+            except Exception:
+                pass
+        await update.message.reply_text(f"✅ Клиент {target} разблокирован.")
+
+    async def note_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/note <текст> — внутренняя заметка в чат (клиенту не отправляется)"""
+        if update.effective_user.id not in self.config.get_all_staff_ids():
+            return
+        args = context.args or []
+        chat = await self._chat_from_topic(update)
+        if chat:
+            note_text = " ".join(args).strip()
+        elif len(args) >= 2 and str(args[0]).isdigit():
+            chat = await self.db.get_chat_by_id(int(args[0]))
+            note_text = " ".join(args[1:]).strip()
+        else:
+            chat, note_text = None, ""
+        if not chat or not note_text:
+            await update.message.reply_text("❌ Использование: /note <текст> (в топике) или /note <chat_id> <текст>")
+            return
+        author = update.effective_user
+        author_name = f"@{author.username}" if author.username else (author.first_name or str(author.id))
+        msg_text = f"📝 Заметка от {author_name}: {note_text}"
+        sysmsg = None
+        try:
+            sysmsg = await self.db.add_message(chat.id, chat.user_id, msg_text, "system")
+        except Exception as e:
+            logger.warning(f"Failed to save note: {e}")
+        if sysmsg and self.ws_manager:
+            try:
+                await self.ws_manager.broadcast(
+                    "new_message",
+                    {
+                        "chat_id": chat.id,
+                        "message": {
+                            "id": sysmsg.id,
+                            "text": msg_text,
+                            "source": "system",
+                            "created_at": sysmsg.created_at.isoformat() if sysmsg.created_at else None,
+                            "media_type": None,
+                            "media_file_id": None,
+                        },
+                    },
+                )
+            except Exception:
+                pass
+        await update.message.reply_text(f"✅ Заметка сохранена в чат #{chat.id} (клиенту не отправлена)")
+
+    async def take_chat(self, query, chat_id: int, manager_id: int):
+        """Кнопка «Взять в работу»: закрепить менеджера за чатом"""
+        chat = await self.db.get_chat_by_id(chat_id)
+        if not chat:
+            try:
+                await query.message.reply_text("❌ Чат не найден.")
+            except Exception:
+                pass
+            return
+        if chat.status != "waiting_manager":
+            try:
+                await query.message.reply_text(f"ℹ️ Чат #{chat_id} не ожидает менеджера (статус: {chat.status}).")
+            except Exception:
+                pass
+            return
+        if chat.manager_id and chat.manager_id != manager_id:
+            try:
+                await query.message.reply_text(f"⚠️ Чат #{chat_id} уже в работе у другого менеджера (ID {chat.manager_id}).")
+            except Exception:
+                pass
+            return
+
+        await self.db.update_chat_status(chat_id, "waiting_manager", manager_id=manager_id)
+        self._set_manager_active_chat(manager_id, chat_id)
+
+        manager = query.from_user
+        mname = f"@{manager.username}" if manager.username else (manager.first_name or str(manager_id))
+        sys_text = f"🙋 Менеджер {mname} взял чат в работу"
+        sysmsg = None
+        try:
+            sysmsg = await self.db.add_message(chat_id, chat.user_id, sys_text, "system")
+        except Exception:
+            pass
+        if self.ws_manager and sysmsg:
+            try:
+                await self.ws_manager.broadcast(
+                    "new_message",
+                    {
+                        "chat_id": chat_id,
+                        "message": {
+                            "id": sysmsg.id,
+                            "text": sys_text,
+                            "source": "system",
+                            "created_at": sysmsg.created_at.isoformat() if sysmsg.created_at else None,
+                            "media_type": None,
+                            "media_file_id": None,
+                        },
+                    },
+                )
+            except Exception:
+                pass
+
+        # Сообщение в топик + статус темы
+        if self._group_id:
+            try:
+                thread_id = await self._ensure_group_topic(chat)
+                if thread_id:
+                    await self.application.bot.send_message(
+                        chat_id=self._group_id, text=sys_text, message_thread_id=thread_id, disable_notification=True
+                    )
+                chat.status = "waiting_manager"
+                chat.manager_id = manager_id
+                await self._edit_group_topic_status(chat, role_hint="manager")
+            except Exception as e:
+                logger.warning(f"Failed to notify group on take_chat: {e}")
+
+        # Уведомляем клиента
+        try:
+            await self.application.bot.send_message(
+                chat_id=chat.user_id, text="👨‍💼 Менеджер подключился к чату и скоро ответит."
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify client on take_chat: {e}")
+
+        # Помечаем в исходном сообщении, кто взял чат
+        try:
+            base_text = query.message.text or ""
+            if "🙋 В работе:" not in base_text:
+                await query.edit_message_text(f"{base_text}\n\n🙋 В работе: {mname}")
+        except Exception:
+            pass
+
+    async def send_client_card(self, query, chat_id: int):
+        """Кнопка «Инфо»: карточка клиента из Support API"""
+        chat = await self.db.get_chat_by_id(chat_id)
+        if not chat:
+            try:
+                await query.message.reply_text("❌ Чат не найден.")
+            except Exception:
+                pass
+            return
+        card = None
+        try:
+            data = await self.user_info.get_user_info(chat.user_id, force=True)
+            if data:
+                card = self.user_info.format_for_manager(data)
+        except Exception as e:
+            logger.warning(f"Info button failed for chat {chat_id}: {e}")
+        try:
+            await query.message.reply_text(card or "❌ Данные не получены: интеграция выключена или клиент не найден.")
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Автоматизация: автозакрытие неактивных чатов и SLA-пинги
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _as_utc(dt):
+        from datetime import timezone as _tz
+        if dt is None:
+            return None
+        return dt.replace(tzinfo=_tz.utc) if dt.tzinfo is None else dt
+
+    async def _lifecycle_loop(self):
+        """Фоновый цикл: раз в минуту проверяет неактивные чаты и зависшие запросы"""
+        await asyncio.sleep(15)
+        logger.info("Lifecycle loop started")
+        while True:
+            try:
+                await self.refresh_runtime_settings()
+                if self._auto_close_enabled:
+                    await self._run_auto_close()
+                if self._sla_ping_enabled:
+                    await self._run_sla_ping()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"Lifecycle loop error: {e}")
+            await asyncio.sleep(60)
+
+    async def _run_auto_close(self):
+        from datetime import datetime, timedelta, timezone as _tz
+        from modules.database import Chat as ChatModel, Message as MessageModel
+
+        now = datetime.now(_tz.utc)
+        reminder_delta = timedelta(minutes=self._auto_close_reminder_minutes)
+        close_delta = timedelta(minutes=self._auto_close_after_minutes)
+
+        chats = await ChatModel.filter(status__in=["active", "waiting_manager"]).all()
+        for chat in chats:
+            try:
+                last_at = self._as_utc(chat.last_message_at)
+                if not last_at:
+                    continue
+                reminder_at = self._as_utc(chat.reminder_sent_at)
+                if reminder_at:
+                    # Напоминание было — закрываем, если клиент так и не ответил
+                    if now - reminder_at >= close_delta:
+                        await self._auto_close_chat(chat)
+                    continue
+                if now - last_at < reminder_delta:
+                    continue
+                # Напоминаем только если последнее слово не за клиентом
+                last_msg = await MessageModel.filter(chat_id=chat.id).order_by("-created_at").first()
+                if not last_msg or last_msg.message_type == "user":
+                    continue
+                await self._send_inactivity_reminder(chat, now)
+            except Exception as e:
+                logger.warning(f"Auto-close check failed for chat {chat.id}: {e}")
+
+    async def _send_inactivity_reminder(self, chat, now):
+        from modules.database import Chat as ChatModel
+        try:
+            await self.application.bot.send_message(chat_id=chat.user_id, text=self._auto_close_reminder_text)
+        except Exception as e:
+            # Клиент недоступен (заблокировал бота и т.п.) — отметку всё равно ставим, чат закроется
+            logger.warning(f"Failed to send inactivity reminder to {chat.user_id}: {e}")
+        await ChatModel.filter(id=chat.id).update(reminder_sent_at=now)
+        try:
+            await self.db.add_message(chat.id, chat.user_id, "⏰ Клиенту отправлено напоминание о неактивности", "system")
+        except Exception:
+            pass
+        logger.info(f"Inactivity reminder sent for chat {chat.id}")
+
+    async def _auto_close_chat(self, chat):
+        logger.info(f"Auto-closing chat {chat.id} due to inactivity")
+        try:
+            await self._close_chat(chat.id, 0, notify_text=self._auto_close_text, reason="автозакрытие по неактивности")
+        except Exception as e:
+            logger.warning(f"Auto-close failed for chat {chat.id}: {e}")
+            return
+        try:
+            chat.status = "closed"
+            await self._edit_group_topic_status(chat, role_hint=None)
+            if self._group_id and self.redis:
+                thread_id = self.redis.get(f"group_topic:chat:{chat.id}")
+                if thread_id:
+                    await self.application.bot.send_message(
+                        chat_id=self._group_id,
+                        text=f"🟢 Чат #{chat.id} закрыт автоматически (клиент не ответил)",
+                        message_thread_id=int(thread_id),
+                        disable_notification=True,
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to update topic on auto-close: {e}")
+
+    async def _run_sla_ping(self):
+        from datetime import datetime, timedelta, timezone as _tz
+        from modules.database import Chat as ChatModel
+
+        now = datetime.now(_tz.utc)
+        threshold = timedelta(minutes=self._sla_ping_minutes)
+
+        chats = await ChatModel.filter(status="waiting_manager", sla_notified=False, manager_id=None).all()
+        for chat in chats:
+            try:
+                waiting_since = self._as_utc(chat.waiting_since) or self._as_utc(chat.last_message_at)
+                if not waiting_since or now - waiting_since < threshold:
+                    continue
+                minutes = int((now - waiting_since).total_seconds() // 60)
+                text = (
+                    f"⏰ Запрос #{chat.id} ждёт менеджера уже {minutes} мин!\n"
+                    f"Клиент: @{chat.username or 'N/A'} (ID {chat.user_id})"
+                )
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🙋 Взять в работу", callback_data=f"take_chat_{chat.id}"),
+                    InlineKeyboardButton("👤 Инфо", callback_data=f"info_chat_{chat.id}"),
+                ]])
+                if self._group_id:
+                    try:
+                        thread_id = await self._ensure_group_topic(chat)
+                        if thread_id:
+                            await self.application.bot.send_message(
+                                chat_id=self._group_id, text=text, message_thread_id=thread_id,
+                                disable_notification=False, reply_markup=keyboard,
+                            )
+                    except Exception as e:
+                        logger.warning(f"SLA ping to group failed for chat {chat.id}: {e}")
+                for staff_id in self.config.get_all_staff_ids():
+                    try:
+                        await self.application.bot.send_message(chat_id=staff_id, text=text, reply_markup=keyboard)
+                    except Exception as e:
+                        logger.warning(f"SLA ping to staff {staff_id} failed: {e}")
+                await ChatModel.filter(id=chat.id).update(sla_notified=True)
+            except Exception as e:
+                logger.warning(f"SLA ping failed for chat {chat.id}: {e}")
+
     async def show_user_faq(self, query):
         """Показать FAQ для пользователя"""
         keyboard = [
@@ -1551,6 +2101,10 @@ class SupportBot:
         info = self._extract_message_info(update)
         if not info:
             return
+        await self.refresh_runtime_settings()
+        # Забаненные клиенты игнорируются
+        if user_id in self._banned_users and user_id not in self.config.get_all_staff_ids():
+            return
         if self._group_id and update.effective_chat and update.effective_chat.id == self._group_id:
             thread_id = update.message.message_thread_id if update.message else None
             if not thread_id:
@@ -1655,10 +2209,20 @@ class SupportBot:
                 await self._duplicate_to_group(chat, user, info, update, role_hint="client")
             except Exception as e:
                 logger.error(f"Failed to duplicate client message to group: {e}")
+        # AI отключен менеджером (/ai off) — бот молчит, диалог ведет менеджер через топик
+        if getattr(chat, "ai_disabled", False):
+            return
         if info["kind"] == "text":
             chat_messages = await self.db.get_chat_messages(chat.id, limit=20)
             chat_history = [{"role": "user" if msg.message_type == "user" else "assistant", "message": msg.content} for msg in chat_messages]
             context_info = {"user_id": user_id, "username": user.username, "first_name": user.first_name, "last_name": user.last_name}
+            # Данные аккаунта клиента из Support API (баланс, подписки, ключи)
+            try:
+                account_info = await self.user_info.get_ai_context(user_id)
+                if account_info:
+                    context_info["account_info"] = account_info
+            except Exception as e:
+                logger.warning(f"Support API context failed for user {user_id}: {e}")
             ai_response = await self.ai.get_ai_answer(info["text"], context_info, chat_history)
             if ai_response:
                 await self._save_message_to_db(chat.id, user_id, {"kind": "text", "text": ai_response}, "ai")

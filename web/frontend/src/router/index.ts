@@ -11,6 +11,8 @@ import UsersSettings from '@/views/settings/UsersSettings.vue'
 import TelegramSettings from '@/views/settings/TelegramSettings.vue'
 import BotSettings from '@/views/settings/BotSettings.vue'
 import AiProvidersSettings from '@/views/settings/AiProvidersSettings.vue'
+import IntegrationSettings from '@/views/settings/IntegrationSettings.vue'
+import AutomationSettings from '@/views/settings/AutomationSettings.vue'
 import NotFound from '@/views/NotFound.vue'
 
 async function getMe() {
@@ -37,6 +39,8 @@ const routes = [
       { path: 'bot', component: BotSettings },
       { path: 'ai', component: AiContextSettings },
       { path: 'ai-providers', component: AiProvidersSettings },
+      { path: 'integration', component: IntegrationSettings },
+      { path: 'automation', component: AutomationSettings },
       { path: 'kb', component: KnowledgeBaseSettings },
       { path: 'media', component: MediaSettings },
       { path: 'profile', component: ProfileSettings },
