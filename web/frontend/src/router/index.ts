@@ -13,6 +13,7 @@ import BotSettings from '@/views/settings/BotSettings.vue'
 import AiProvidersSettings from '@/views/settings/AiProvidersSettings.vue'
 import IntegrationSettings from '@/views/settings/IntegrationSettings.vue'
 import AutomationSettings from '@/views/settings/AutomationSettings.vue'
+import Dashboard from '@/views/Dashboard.vue'
 import NotFound from '@/views/NotFound.vue'
 
 async function getMe() {
@@ -29,6 +30,7 @@ const routes = [
   { path: '/', redirect: '/chats' },
   { path: '/login', component: Login },
   { path: '/chats/:id?', component: Chats },
+  { path: '/dashboard', component: Dashboard },
   {
     path: '/settings',
     component: SettingsLayout,

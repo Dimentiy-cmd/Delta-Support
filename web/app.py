@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from web.ws_manager import WSManager
-from web.routers import ws, api_auth, api_chats, api_users, api_settings, api_branding, api_kb, api_ai
+from web.routers import ws, api_auth, api_chats, api_users, api_settings, api_branding, api_kb, api_ai, api_stats
 
 # Создаем приложение FastAPI
 app = FastAPI(
@@ -37,6 +37,7 @@ app.include_router(api_settings.router)
 app.include_router(api_branding.router)
 app.include_router(api_kb.router)
 app.include_router(api_ai.router)
+app.include_router(api_stats.router)
 
 # 2. Обслуживание ассетов фронтенда (Vite build)
 # В index.html пути к ассетам /assets/..., поэтому монтируем их сюда
