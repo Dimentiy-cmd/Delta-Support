@@ -14,6 +14,7 @@
 
 import logging
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional, Dict, List
 
@@ -25,6 +26,15 @@ from modules.database import SystemConfig
 logger = logging.getLogger(__name__)
 
 _TRUE_VALUES = ("1", "true", "yes", "y", "on")
+
+
+@dataclass
+class PendingAction:
+    """Разрушающее действие (сброс устройств, перевыпуск подписки), которое AI
+    предложил, но не выполнило — ждёт явного подтверждения клиента кнопкой"""
+    action: str  # "reset_devices" | "revoke_subscription" | "delete_device"
+    params: Dict = field(default_factory=dict)
+    confirm_text: str = ""
 
 
 def _fmt_gb(value_bytes) -> str:
@@ -168,6 +178,101 @@ class UserInfoService:
         if not data:
             return None
         return self.format_for_ai(data)
+
+    # ------------------------------------------------------------------
+    # Action-эндпоинты Support API: платежи, подписки, устройства
+    # ------------------------------------------------------------------
+
+    async def _post(self, path: str, payload: Dict) -> Optional[Dict]:
+        """Общий POST-запрос к Support API. Возвращает данные при ok=true, иначе None."""
+        await self._refresh_settings()
+        if not self.is_configured():
+            return None
+        url = f"{self.base_url}{path}"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    url,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.token}",
+                    },
+                    json=payload,
+                    timeout=15.0,
+                )
+            if resp.status_code != 200:
+                logger.warning(f"Support API: HTTP {resp.status_code} для {path}")
+                return None
+            data = resp.json()
+            if not data.get("ok"):
+                logger.info(f"Support API {path} error: {data.get('error')}")
+                return data if data.get("error") else None
+            return data
+        except httpx.TimeoutException:
+            logger.warning(f"Support API: таймаут для {path}")
+            return None
+        except Exception as e:
+            logger.warning(f"Support API: ошибка запроса {path}: {e}")
+            return None
+
+    async def check_payment(self, transaction_id: str, owner_telegram_id: int) -> Optional[Dict]:
+        """Проверить платёж по ID транзакции. Возвращает данные, ТОЛЬКО если транзакция
+        принадлежит owner_telegram_id — иначе None (защита от подбора чужих ID)."""
+        data = await self._post("/api/support/payment/check", {"transaction_id": transaction_id})
+        if not data or not data.get("ok"):
+            return None
+        owner = (data.get("user") or {}).get("telegram_id")
+        if owner is not None and int(owner) != int(owner_telegram_id):
+            logger.warning(f"Support API: попытка получить чужую транзакцию {transaction_id} (owner={owner}, requester={owner_telegram_id})")
+            return None
+        return data
+
+    async def get_own_subscriptions(self, telegram_id: int) -> List[Dict]:
+        """Подписки, реально принадлежащие этому telegram_id (из кешированного user_info)"""
+        data = await self.get_user_info(telegram_id)
+        if not data:
+            return []
+        return (data.get("connections") or {}).get("remna_subscriptions") or []
+
+    async def find_own_subscription(
+        self, telegram_id: int, username: Optional[str] = None, short_id: Optional[str] = None
+    ) -> Optional[Dict]:
+        """Найти подписку среди СОБСТВЕННЫХ подписок клиента по username/short_id.
+        Это единственная точка проверки владения перед разрушающими действиями —
+        никогда не доверяем идентификатору, который AI взял из текста/аргументов,
+        без сверки с реальным списком подписок этого telegram_id."""
+        subs = await self.get_own_subscriptions(telegram_id)
+        for s in subs:
+            if username and s.get("username") == username:
+                return s
+            if short_id and s.get("short_id") == short_id:
+                return s
+        return None
+
+    async def get_subscription_info(self, username: Optional[str] = None, short_id: Optional[str] = None) -> Optional[Dict]:
+        """Read-only: подробная информация о подписке (для чтения не требует владения —
+        вызывающий код обязан сам сверить username/short_id со списком своих подписок,
+        когда данные идут клиенту)"""
+        payload = {"username": username} if username else {"short_id": short_id}
+        return await self._post("/api/support/subscription_info", payload)
+
+    async def get_subscription_devices(self, username: str) -> Optional[Dict]:
+        return await self._post("/api/support/subscription/devices", {"username": username})
+
+    async def delete_device(self, username: str, hwid: str) -> Optional[Dict]:
+        """Разрушающее действие — вызывать только после подтверждения клиента
+        и проверки владения через find_own_subscription"""
+        return await self._post("/api/support/subscription/device/delete", {"username": username, "hwid": hwid})
+
+    async def reset_devices(self, short_id: str) -> Optional[Dict]:
+        """Разрушающее действие — вызывать только после подтверждения клиента
+        и проверки владения через find_own_subscription"""
+        return await self._post("/api/support/subscription/devices/reset", {"short_id": short_id})
+
+    async def revoke_subscription(self, username: str) -> Optional[Dict]:
+        """Разрушающее действие (перевыпуск подписки) — вызывать только после
+        подтверждения клиента и проверки владения через find_own_subscription"""
+        return await self._post("/api/support/subscription/revoke", {"username": username})
 
     # ------------------------------------------------------------------
     # Форматирование

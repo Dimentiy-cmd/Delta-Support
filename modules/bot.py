@@ -24,7 +24,7 @@ from typing import Optional
 from modules.config import Config
 from modules.database import Database, SystemConfig
 from modules.ai_support import AISupport
-from modules.user_info import UserInfoService
+from modules.user_info import UserInfoService, PendingAction
 
 
 class SupportBot:
@@ -73,6 +73,10 @@ class SupportBot:
         self._sla_ping_enabled = True
         self._sla_ping_minutes = 15               # повторный пинг, если запрос никто не взял
         self._lifecycle_task = None
+        # Разрушающие действия (сброс устройств, перевыпуск подписки), ожидающие
+        # подтверждения клиента: token -> {"expires": ts, "data": {...}}.
+        # Fallback на память процесса, если Redis недоступен (TTL 5 минут).
+        self._pending_actions_mem = {}
         # AI-обработка медиа и отчеты
         self._ai_voice_enabled = True             # расшифровка голосовых через Whisper
         self._ai_vision_enabled = True            # разбор фото/скриншотов vision-моделью
@@ -756,7 +760,18 @@ class SupportBot:
             else:
                 await query.edit_message_text("❌ Вы не можете запросить менеджера для этого чата.")
             return
-        
+
+        # Подтверждение/отмена разрушающих действий (сброс устройств, перевыпуск подписки)
+        # доступно клиенту напрямую, без прав персонала — это его собственный аккаунт
+        if data.startswith("confirm_action_"):
+            token = data.replace("confirm_action_", "")
+            await self._confirm_pending_action(query, user_id, token)
+            return
+        if data.startswith("cancel_action_"):
+            token = data.replace("cancel_action_", "")
+            await self._cancel_pending_action(query, user_id, token)
+            return
+
         # Остальные функции только для админов/менеджеров
         if user_id not in self.config.get_all_staff_ids():
             await query.edit_message_text("❌ У вас нет доступа к этой функции.")
@@ -1512,6 +1527,172 @@ class SupportBot:
             logger.warning(f"Info button failed for chat {chat_id}: {e}")
         try:
             await query.message.reply_text(card or "❌ Данные не получены: интеграция выключена или клиент не найден.")
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Разрушающие действия AI (сброс устройств, перевыпуск подписки):
+    # подтверждение клиентом перед выполнением
+    # ------------------------------------------------------------------
+
+    def _store_pending_action(self, token: str, data: dict, ttl: int = 300):
+        payload = json.dumps(data, ensure_ascii=False)
+        if self.redis:
+            try:
+                self.redis.set(f"pending_action:{token}", payload, ex=ttl)
+                return
+            except Exception as e:
+                logger.warning(f"Redis pending_action set failed, falling back to memory: {e}")
+        self._pending_actions_mem[token] = (time.time() + ttl, data)
+
+    def _peek_pending_action(self, token: str) -> Optional[dict]:
+        """Прочитать без удаления — чтобы проверить владение до изъятия токена"""
+        if self.redis:
+            try:
+                raw = self.redis.get(f"pending_action:{token}")
+                if raw:
+                    return json.loads(raw)
+            except Exception as e:
+                logger.warning(f"Redis pending_action peek failed: {e}")
+            return None
+        entry = self._pending_actions_mem.get(token)
+        if entry and entry[0] > time.time():
+            return entry[1]
+        return None
+
+    def _pop_pending_action(self, token: str) -> Optional[dict]:
+        if self.redis:
+            try:
+                raw = self.redis.get(f"pending_action:{token}")
+                if raw:
+                    self.redis.delete(f"pending_action:{token}")
+                    return json.loads(raw)
+            except Exception as e:
+                logger.warning(f"Redis pending_action get failed: {e}")
+        entry = self._pending_actions_mem.pop(token, None)
+        if entry and entry[0] > time.time():
+            return entry[1]
+        return None
+
+    async def _send_pending_action_confirmation(self, update: Update, chat, action: PendingAction):
+        """AI предложило разрушающее действие — просим клиента подтвердить кнопкой,
+        реальный вызов Support API происходит только после клика"""
+        import secrets
+        token = secrets.token_urlsafe(8)
+        self._store_pending_action(token, {
+            "chat_id": chat.id,
+            "user_id": chat.user_id,
+            "action": action.action,
+            "params": action.params,
+        })
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Да, подтверждаю", callback_data=f"confirm_action_{token}"),
+            InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_action_{token}"),
+        ]])
+        try:
+            await update.message.reply_text(action.confirm_text, reply_markup=keyboard)
+        except Exception as e:
+            logger.warning(f"Failed to send pending action confirmation: {e}")
+        try:
+            await self._save_message_to_db(chat.id, chat.user_id, {"kind": "text", "text": action.confirm_text}, "ai")
+        except Exception:
+            pass
+
+    async def _confirm_pending_action(self, query, user_id: int, token: str):
+        """Клиент нажал «Подтверждаю» — повторно проверяем владение и выполняем реальный вызов.
+        Токен изымается (pop) только ПОСЛЕ проверки владения — иначе чужой/ошибочный клик
+        по кнопке удалил бы токен и лишил настоящего владельца возможности подтвердить."""
+        entry = self._peek_pending_action(token)
+        if not entry:
+            try:
+                await query.edit_message_text("⏱ Действие устарело или уже обработано. Напишите вопрос ещё раз.")
+            except Exception:
+                pass
+            return
+        if entry.get("user_id") != user_id:
+            try:
+                await query.answer("Это подтверждение не для вас", show_alert=True)
+            except Exception:
+                pass
+            return
+
+        entry = self._pop_pending_action(token)
+        if not entry:
+            try:
+                await query.edit_message_text("⏱ Действие уже обработано.")
+            except Exception:
+                pass
+            return
+
+        chat_id = entry.get("chat_id")
+        action_name = entry.get("action")
+        params = entry.get("params") or {}
+
+        result_text = "❌ Неизвестное действие."
+        try:
+            if action_name == "reset_devices":
+                username = params.get("subscription_username")
+                owned = await self.user_info.find_own_subscription(user_id, username=username)
+                if not owned:
+                    result_text = "❌ Подписка больше не найдена среди ваших — действие отменено."
+                else:
+                    res = await self.user_info.reset_devices(params.get("short_id") or owned.get("short_id"))
+                    result_text = (
+                        "✅ Все устройства подписки сброшены."
+                        if res and res.get("ok")
+                        else "❌ Не удалось сбросить устройства. Попробуйте позже или обратитесь к менеджеру."
+                    )
+            elif action_name == "revoke_subscription":
+                username = params.get("subscription_username")
+                owned = await self.user_info.find_own_subscription(user_id, username=username)
+                if not owned:
+                    result_text = "❌ Подписка больше не найдена среди ваших — действие отменено."
+                else:
+                    res = await self.user_info.revoke_subscription(username)
+                    if res and res.get("ok"):
+                        result_text = "✅ Подписка перевыпущена. Зайдите в личный кабинет за новой ссылкой."
+                    elif res and res.get("error") == "subscription_too_new":
+                        remaining = max(res.get("required_age_days", 21) - res.get("age_days", 0), 1)
+                        result_text = f"❌ Перевыпуск пока недоступен — подождите ещё примерно {remaining} дн."
+                    else:
+                        result_text = "❌ Не удалось перевыпустить подписку. Попробуйте позже или обратитесь к менеджеру."
+            elif action_name == "delete_device":
+                username = params.get("subscription_username")
+                hwid = params.get("hwid")
+                owned = await self.user_info.find_own_subscription(user_id, username=username)
+                if not owned or not hwid:
+                    result_text = "❌ Устройство или подписка больше не найдены — действие отменено."
+                else:
+                    res = await self.user_info.delete_device(username, hwid)
+                    result_text = "✅ Устройство удалено." if res and res.get("ok") else "❌ Не удалось удалить устройство. Попробуйте позже."
+        except Exception as e:
+            logger.error(f"Pending action execution failed ({action_name}): {e}")
+            result_text = "❌ Произошла ошибка при выполнении. Обратитесь к менеджеру."
+
+        try:
+            await query.edit_message_text(result_text)
+        except Exception:
+            try:
+                await query.message.reply_text(result_text)
+            except Exception:
+                pass
+        if chat_id:
+            try:
+                await self._save_message_to_db(chat_id, user_id, {"kind": "text", "text": result_text}, "system")
+            except Exception:
+                pass
+
+    async def _cancel_pending_action(self, query, user_id: int, token: str):
+        entry = self._peek_pending_action(token)
+        if entry and entry.get("user_id") != user_id:
+            try:
+                await query.answer("Это не ваше подтверждение", show_alert=True)
+            except Exception:
+                pass
+            return
+        self._pop_pending_action(token)
+        try:
+            await query.edit_message_text("Отменено.")
         except Exception:
             pass
 
@@ -2352,8 +2533,13 @@ class SupportBot:
                     context_info["account_info"] = account_info
             except Exception as e:
                 logger.warning(f"Support API context failed for user {user_id}: {e}")
-            ai_response = await self.ai.get_ai_answer(question_text, context_info, chat_history, image_data_url=image_data_url)
-            if ai_response:
+            ai_response = await self.ai.get_ai_answer(
+                question_text, context_info, chat_history, image_data_url=image_data_url,
+                execute_tools=True, user_info_service=self.user_info,
+            )
+            if isinstance(ai_response, PendingAction):
+                await self._send_pending_action_confirmation(update, chat, ai_response)
+            elif ai_response:
                 await self._save_message_to_db(chat.id, user_id, {"kind": "text", "text": ai_response}, "ai")
                 if any(keyword in ai_response.lower() for keyword in ["менеджер", "пригласить", "подключить"]):
                     keyboard = [[InlineKeyboardButton("Да, пригласите менеджера", callback_data=f"request_manager_{chat.id}")]]

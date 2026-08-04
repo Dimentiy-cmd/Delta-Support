@@ -9,11 +9,126 @@ import logging
 import json
 import time
 import httpx
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Union
 from modules.config import Config
 from modules.database import KnowledgeBaseEntry, SystemConfig, AIProvider
+from modules.user_info import PendingAction
 
 logger = logging.getLogger(__name__)
+
+
+# Read-only инструменты: AI вызывает автономно во время чата с клиентом.
+# Владение (что это данные ИМЕННО этого клиента) проверяется на исполнении,
+# а не доверяется параметрам, которые сформировал сам AI.
+_READONLY_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_payment",
+            "description": (
+                "Проверить статус платежа клиента по ID транзакции, order_id или provider transaction id. "
+                "Используй, когда клиент говорит, что оплатил, но деньги не пришли, или спрашивает статус оплаты."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "transaction_id": {"type": "string", "description": "ID транзакции/order_id, который назвал клиент"}
+                },
+                "required": ["transaction_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_subscription_info",
+            "description": (
+                "Получить подробную информацию о конкретной подписке клиента: тариф, срок действия, трафик, "
+                "лимит устройств. Используй username подписки из раздела ДАННЫЕ АККАУНТА ПОЛЬЗОВАТЕЛЯ."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subscription_username": {"type": "string", "description": "username подписки клиента"}
+                },
+                "required": ["subscription_username"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_subscription_devices",
+            "description": "Получить список устройств, подключённых к подписке клиента.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subscription_username": {"type": "string", "description": "username подписки клиента"}
+                },
+                "required": ["subscription_username"],
+            },
+        },
+    },
+]
+
+# Разрушающие инструменты: AI НЕ выполняет их напрямую — только формирует
+# запрос на подтверждение, реальное действие происходит после явного клика
+# клиента по кнопке в Telegram (см. modules.user_info.PendingAction)
+_DESTRUCTIVE_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "reset_devices",
+            "description": (
+                "Сбросить (отключить) ВСЕ устройства подписки клиента. Разрушающее действие — используй, "
+                "только если клиент явно просит сбросить/отключить/сбросить все устройства подписки."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subscription_username": {"type": "string", "description": "username подписки клиента"}
+                },
+                "required": ["subscription_username"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "revoke_subscription",
+            "description": (
+                "Перевыпустить подписку клиента: создаётся новая ссылка, старые устройства отключаются. "
+                "Работает только если с даты выдачи подписки прошло больше 20 дней. Используй, только если "
+                "клиент явно просит перевыпустить/обновить ссылку подписки."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subscription_username": {"type": "string", "description": "username подписки клиента"}
+                },
+                "required": ["subscription_username"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_device",
+            "description": (
+                "Удалить одно конкретное устройство из подписки клиента по его hwid. Обычно вызывается после "
+                "get_subscription_devices, когда клиент указал, какое именно устройство убрать."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subscription_username": {"type": "string"},
+                    "hwid": {"type": "string", "description": "hwid устройства из списка get_subscription_devices"},
+                },
+                "required": ["subscription_username", "hwid"],
+            },
+        },
+    },
+]
 
 
 class AISupport:
@@ -189,9 +304,18 @@ class AISupport:
         question: str,
         context: Optional[Dict] = None,
         chat_history: Optional[List[Dict]] = None,
-        image_data_url: Optional[str] = None
-    ) -> Optional[str]:
-        """Получить ответ от AI с поддержкой нескольких провайдеров"""
+        image_data_url: Optional[str] = None,
+        execute_tools: bool = False,
+        user_info_service=None,
+    ) -> Optional[Union[str, PendingAction]]:
+        """Получить ответ от AI с поддержкой нескольких провайдеров.
+
+        execute_tools=True включает tool calling (проверка платежа, инфо о подписке/
+        устройствах, сброс устройств, перевыпуск подписки) — используется ТОЛЬКО в
+        основном чате с живым клиентом (bot.py), требует user_info_service и
+        context['user_id'] (telegram_id клиента) для проверки владения данными.
+        Разрушающие действия не выполняются напрямую — возвращается PendingAction,
+        которое ждёт подтверждения клиента кнопкой в Telegram."""
         await self._refresh_runtime_settings()
 
         if not self.enabled:
@@ -205,6 +329,8 @@ class AISupport:
         if image_data_url and chat_history:
             chat_history = chat_history[-6:]
 
+        tools_allowed = execute_tools and user_info_service is not None and bool((context or {}).get("user_id"))
+
         last_error = None
         for provider in self._ai_providers:
             # Для изображений подходят только vision-модели
@@ -216,7 +342,9 @@ class AISupport:
                     question=question,
                     context=context,
                     chat_history=chat_history,
-                    image_data_url=image_data_url
+                    image_data_url=image_data_url,
+                    execute_tools=tools_allowed,
+                    user_info_service=user_info_service,
                 )
                 if result:
                     return result
@@ -229,14 +357,100 @@ class AISupport:
             logger.error(f"Все AI провайдеры вернули ошибку. Последняя: {last_error}")
         return None
 
+    async def _execute_tool_call(self, name: str, args: Dict, owner_telegram_id: int, user_info_service):
+        """Выполнить один вызов инструмента. Возвращает кортеж:
+        ("result", dict) — обычный результат, отдаётся AI как есть
+        ("denied", str) — владение не подтверждено, AI получит объяснение вместо данных
+        ("pending_action", PendingAction) — разрушающее действие подтверждено по владению,
+            но не выполнено — ждёт подтверждения клиента"""
+        try:
+            if name == "check_payment":
+                tx_id = str(args.get("transaction_id") or "").strip()
+                if not tx_id:
+                    return ("result", {"ok": False, "error": "transaction_id не указан"})
+                data = await user_info_service.check_payment(tx_id, owner_telegram_id)
+                if not data:
+                    return ("result", {"ok": False, "error": "Транзакция не найдена"})
+                return ("result", data)
+
+            if name == "get_subscription_info":
+                username = str(args.get("subscription_username") or "").strip()
+                owned = await user_info_service.find_own_subscription(owner_telegram_id, username=username)
+                if not owned:
+                    return ("result", {"ok": False, "error": "Подписка с таким именем не найдена среди подписок этого клиента"})
+                data = await user_info_service.get_subscription_info(username=username)
+                if not data:
+                    return ("result", {"ok": False, "error": "Не удалось получить данные подписки"})
+                return ("result", data)
+
+            if name == "get_subscription_devices":
+                username = str(args.get("subscription_username") or "").strip()
+                owned = await user_info_service.find_own_subscription(owner_telegram_id, username=username)
+                if not owned:
+                    return ("result", {"ok": False, "error": "Подписка с таким именем не найдена среди подписок этого клиента"})
+                data = await user_info_service.get_subscription_devices(username)
+                if not data:
+                    return ("result", {"ok": False, "error": "Не удалось получить список устройств"})
+                return ("result", data)
+
+            if name == "reset_devices":
+                username = str(args.get("subscription_username") or "").strip()
+                owned = await user_info_service.find_own_subscription(owner_telegram_id, username=username)
+                if not owned:
+                    return ("denied", "Подписка с таким именем не найдена среди подписок этого клиента — действие отклонено.")
+                action = PendingAction(
+                    action="reset_devices",
+                    params={"short_id": owned.get("short_id"), "subscription_username": username},
+                    confirm_text=(
+                        f"⚠️ Точно сбросить ВСЕ устройства подписки «{owned.get('tarif', username)}»? "
+                        "Все подключённые устройства отключатся, их нужно будет подключить заново."
+                    ),
+                )
+                return ("pending_action", action)
+
+            if name == "revoke_subscription":
+                username = str(args.get("subscription_username") or "").strip()
+                owned = await user_info_service.find_own_subscription(owner_telegram_id, username=username)
+                if not owned:
+                    return ("denied", "Подписка с таким именем не найдена среди подписок этого клиента — действие отклонено.")
+                action = PendingAction(
+                    action="revoke_subscription",
+                    params={"subscription_username": username},
+                    confirm_text=(
+                        f"⚠️ Точно перевыпустить подписку «{owned.get('tarif', username)}»? "
+                        "Будет создана новая ссылка, старые устройства перестанут работать."
+                    ),
+                )
+                return ("pending_action", action)
+
+            if name == "delete_device":
+                username = str(args.get("subscription_username") or "").strip()
+                hwid = str(args.get("hwid") or "").strip()
+                owned = await user_info_service.find_own_subscription(owner_telegram_id, username=username)
+                if not owned or not hwid:
+                    return ("denied", "Подписка или устройство не найдены среди данных этого клиента — действие отклонено.")
+                action = PendingAction(
+                    action="delete_device",
+                    params={"subscription_username": username, "hwid": hwid},
+                    confirm_text=f"⚠️ Удалить это устройство из подписки «{owned.get('tarif', username)}»?",
+                )
+                return ("pending_action", action)
+
+            return ("result", {"ok": False, "error": f"неизвестный инструмент {name}"})
+        except Exception as e:
+            logger.warning(f"Tool execution error ({name}): {e}")
+            return ("result", {"ok": False, "error": "внутренняя ошибка"})
+
     async def _try_provider_request(
         self,
         provider: AIProvider,
         question: str,
         context: Optional[Dict] = None,
         chat_history: Optional[List[Dict]] = None,
-        image_data_url: Optional[str] = None
-    ) -> Optional[str]:
+        image_data_url: Optional[str] = None,
+        execute_tools: bool = False,
+        user_info_service=None,
+    ) -> Optional[Union[str, PendingAction]]:
         """Попытка запроса к конкретному провайдеру с поддержкой нескольких ключей"""
         url = provider.base_url or "https://api.openai.com/v1"
         if not url.endswith("/chat/completions"):
@@ -269,7 +483,7 @@ class AISupport:
         if provider.api_type == "groq" and not provider.base_url:
             url = "https://api.groq.com/openai/v1/chat/completions"
 
-        service_context = await self._build_service_context(context)
+        service_context = await self._build_service_context(context, question=question)
         user_context = self._build_user_context(context)
         project_name = self._project_name or "DELTA-Support"
         
@@ -355,36 +569,78 @@ class AISupport:
         if provider.api_type == "groq" and "qwen" in (provider.model_name or "").lower():
             payload["reasoning_format"] = "hidden"
             payload["max_tokens"] = 4096
-        
+
+        # Tool calling — только в живом чате с клиентом (execute_tools=True из bot.py),
+        # не для vision-запросов (там своя, урезанная схема сообщений)
+        if execute_tools and not image_data_url:
+            payload["tools"] = _READONLY_TOOLS + _DESTRUCTIVE_TOOLS
+            payload["tool_choice"] = "auto"
+
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(url, headers=headers, json=payload, timeout=40.0)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    content = data["choices"][0]["message"]["content"]
-                    if content:
-                        # Страховка: убираем reasoning-блоки <think>...</think>
-                        import re
-                        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-                    if content:
-                        return content
-                    raise Exception("Empty response from AI")
-                elif response.status_code == 429:
-                    raise Exception(f"Rate limit exceeded (429)")
-                elif response.status_code == 401:
-                    raise Exception(f"Invalid API key (401)")
-                elif response.status_code == 400:
-                    raise Exception(f"Bad request: {response.text[:200]}")
-                else:
-                    raise Exception(f"API Error {response.status_code}: {response.text[:200]}")
-                    
+                response = await self._post_chat_completion(client, url, headers, payload)
+
+                if execute_tools and not image_data_url:
+                    message = response["choices"][0]["message"]
+                    tool_calls = message.get("tool_calls")
+                    if tool_calls:
+                        owner_telegram_id = (context or {}).get("user_id")
+                        messages.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
+                        for tc in tool_calls:
+                            fn = tc.get("function") or {}
+                            name = fn.get("name") or ""
+                            try:
+                                args = json.loads(fn.get("arguments") or "{}")
+                            except Exception:
+                                args = {}
+                            kind, payload_result = await self._execute_tool_call(name, args, owner_telegram_id, user_info_service)
+                            if kind == "pending_action":
+                                # Разрушающее действие подтверждено по владению — не выполняем,
+                                # возвращаем сразу, дальнейшая генерация текста не нужна
+                                return payload_result
+                            tool_content = payload_result if kind == "result" else {"ok": False, "error": payload_result}
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id"),
+                                "content": json.dumps(tool_content, ensure_ascii=False, default=str),
+                            })
+                        # Финальный запрос без tools — просим AI сформулировать ответ по результатам
+                        follow_up = {**payload, "messages": messages}
+                        follow_up.pop("tools", None)
+                        follow_up.pop("tool_choice", None)
+                        response = await self._post_chat_completion(client, url, headers, follow_up)
+
+                data = response
+                content = data["choices"][0]["message"]["content"]
+                if content:
+                    # Страховка: убираем reasoning-блоки <think>...</think>
+                    import re
+                    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+                if content:
+                    return content
+                raise Exception("Empty response from AI")
+
         except httpx.TimeoutException:
             raise Exception("Request timeout")
         except httpx.ConnectError as e:
             raise Exception(f"Connection error: {str(e)[:100]}")
         except Exception as e:
             raise
+
+    @staticmethod
+    async def _post_chat_completion(client: httpx.AsyncClient, url: str, headers: dict, payload: dict) -> dict:
+        """POST к /chat/completions с обработкой типовых кодов ошибок — общий код для
+        первого запроса и follow-up после исполнения tool calls"""
+        response = await client.post(url, headers=headers, json=payload, timeout=40.0)
+        if response.status_code == 200:
+            return response.json()
+        if response.status_code == 429:
+            raise Exception("Rate limit exceeded (429)")
+        if response.status_code == 401:
+            raise Exception("Invalid API key (401)")
+        if response.status_code == 400:
+            raise Exception(f"Bad request: {response.text[:200]}")
+        raise Exception(f"API Error {response.status_code}: {response.text[:200]}")
 
     def _build_user_context(self, context: Optional[Dict] = None) -> str:
         """Построить контекст о пользователе"""
@@ -412,52 +668,94 @@ class AISupport:
         
         return "\n".join(parts)
 
-    async def _build_service_context(self, context: Optional[Dict] = None) -> str:
-        """Построить полный контекст о сервисе с кешированием"""
+    async def _build_base_context(self) -> str:
+        """Статичная часть контекста о сервисе (без базы знаний) — кешируется"""
         now = time.monotonic()
-        
         if now - self._service_context_ts < self._context_cache_ttl:
             return self._service_context_cache
-        
+
         parts = []
-        
         parts.append("ИНФОРМАЦИЯ О СЕРВИСЕ:")
         parts.append(f"Название: {self._project_name}")
-        
+
         if self._project_description:
             parts.append(f"\nОписание сервиса:\n{self._project_description}")
-        
+
         if self._project_website:
             parts.append(f"\nВеб-сайт: {self._project_website}")
-        
+
         if self._project_bot_link:
             parts.append(f"Ссылка на бота: {self._project_bot_link}")
-        
+
         if self._project_owner_contacts:
             parts.append(f"Контакты поддержки: {self._project_owner_contacts}")
-        
+
         parts.append(f"Часы работы поддержки: {self._service_support_hours}")
-        
+
         if self._service_features:
             parts.append(f"\nОсобенности сервиса:\n{self._service_features}")
-        
+
         if self._service_tariffs:
             parts.append(f"\nТарифы и цены:\n{self._service_tariffs}")
-        
+
         if self._service_faq:
             parts.append(f"\nЧасто задаваемые вопросы:\n{self._service_faq}")
-        
+
         if self._service_instructions:
             parts.append(f"\nИнструкции по использованию:\n{self._service_instructions}")
-        
-        kb_entries = await self._get_kb_entries()
-        if kb_entries:
-            parts.append("\n\nБАЗА ЗНАНИЙ (FAQ и инструкции):")
-            for entry in kb_entries:
-                parts.append(f"\n--- {entry.title} ---")
-                parts.append(entry.content)
-        
+
         self._service_context_cache = "\n".join(parts)
         self._service_context_ts = now
-        
         return self._service_context_cache
+
+    # Статьи БЗ, которые включаем целиком без отбора, пока их немного —
+    # отбор под вопрос включается только когда база разрастается
+    _KB_INLINE_ALL_THRESHOLD = 6
+    # Сколько статей включать в промпт после отбора по релевантности
+    _KB_TOP_K = 5
+
+    def _select_kb_entries(self, kb_entries: List, question: Optional[str]) -> List:
+        """Лёгкий RAG без embeddings: лексический скоринг статей БЗ по вопросу.
+        При маленькой базе (<= _KB_INLINE_ALL_THRESHOLD статей) включаем всё —
+        отбор нужен только когда база разрослась и не помещается в промпт целиком."""
+        if not kb_entries or len(kb_entries) <= self._KB_INLINE_ALL_THRESHOLD or not question:
+            return kb_entries
+
+        from modules.stats import _tokenize
+
+        def _stems(text: str) -> set:
+            # Обрезка до 6 символов — грубый, но бесплатный аналог стемминга:
+            # ловит совпадения вроде "устройства"/"устройствами" без словарей и ML
+            return {w[:6] for w in _tokenize(text)}
+
+        q_tokens = _stems(question)
+        if not q_tokens:
+            return kb_entries[: self._KB_TOP_K]
+
+        scored = []
+        for entry in kb_entries:
+            title_tokens = _stems(entry.title)
+            content_tokens = _stems(entry.content)
+            score = 3 * len(q_tokens & title_tokens) + len(q_tokens & content_tokens)
+            scored.append((score, entry))
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        top = [entry for score, entry in scored[: self._KB_TOP_K] if score > 0]
+        # Ничего не совпало лексически — не оставляем AI совсем без базы знаний
+        return top if top else kb_entries[: self._KB_TOP_K]
+
+    async def _build_service_context(self, context: Optional[Dict] = None, question: Optional[str] = None) -> str:
+        """Контекст о сервисе: статичная часть + релевантные вопросу статьи БЗ"""
+        base = await self._build_base_context()
+
+        kb_entries = await self._get_kb_entries()
+        selected = self._select_kb_entries(kb_entries, question)
+        if not selected:
+            return base
+
+        kb_parts = ["\n\nБАЗА ЗНАНИЙ (FAQ и инструкции):"]
+        for entry in selected:
+            kb_parts.append(f"\n--- {entry.title} ---")
+            kb_parts.append(entry.content)
+
+        return base + "\n".join(kb_parts)
