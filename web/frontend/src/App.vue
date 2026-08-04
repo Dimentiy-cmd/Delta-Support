@@ -11,6 +11,9 @@
           <RouterLink class="rail-btn" to="/chats" title="Чаты">
             <i class="pi pi-comments"></i>
           </RouterLink>
+          <RouterLink v-if="auth.me?.role === 'admin'" class="rail-btn" to="/dashboard" title="Дашборд">
+            <i class="pi pi-chart-bar"></i>
+          </RouterLink>
           <RouterLink v-if="auth.me?.role === 'admin'" class="rail-btn" to="/settings/appearance" title="Настройки">
             <i class="pi pi-cog"></i>
           </RouterLink>

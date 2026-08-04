@@ -55,6 +55,28 @@
       </div>
     </div>
 
+    <!-- AI и медиа -->
+    <div class="panel card" style="padding: 16px; border-radius: var(--app-radius); margin-bottom: 16px;">
+      <div style="font-weight: 700; margin-bottom: 4px;">AI: голосовые, фото и отчёты</div>
+      <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
+        Расшифровка голосовых через Whisper и разбор скриншотов vision-моделью (нужен Groq-провайдер).
+      </div>
+      <div style="display:flex; flex-direction:column; gap:12px; max-width: 640px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <InputSwitch v-model="form.ai_voice_enabled" />
+          <span>AI отвечает на голосовые сообщения (расшифровка Whisper)</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <InputSwitch v-model="form.ai_vision_enabled" />
+          <span>AI разбирает фото и скриншоты ошибок</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <InputSwitch v-model="form.weekly_report_enabled" />
+          <span>Еженедельный отчёт админам в Telegram (понедельник, ~09:00 МСК)</span>
+        </div>
+      </div>
+    </div>
+
     <div style="display:flex; gap:8px; align-items:center;">
       <Button label="Сохранить" icon="pi pi-check" :loading="saving" @click="save" />
       <span v-if="msg" :style="{ color: msgOk ? '#22c55e' : '#ef4444', fontSize: '13px' }">{{ msg }}</span>
@@ -82,7 +104,10 @@ const form = ref({
   auto_close_reminder_text: '',
   auto_close_text: '',
   sla_ping_enabled: true,
-  sla_ping_minutes: '15'
+  sla_ping_minutes: '15',
+  ai_voice_enabled: true,
+  ai_vision_enabled: true,
+  weekly_report_enabled: true
 })
 const saving = ref(false)
 const msg = ref('')
@@ -100,6 +125,9 @@ async function load() {
   form.value.auto_close_text = e.auto_close_text || ''
   form.value.sla_ping_enabled = !!e.sla_ping_enabled
   form.value.sla_ping_minutes = String(e.sla_ping_minutes ?? 15)
+  form.value.ai_voice_enabled = e.ai_voice_enabled !== false
+  form.value.ai_vision_enabled = e.ai_vision_enabled !== false
+  form.value.weekly_report_enabled = e.weekly_report_enabled !== false
 }
 
 async function save() {

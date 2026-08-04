@@ -356,3 +356,4 @@ vite.config.ts.timestamp-*
 .vite/
 
 web/static/uploads/branding/
+delta-support-settings-import.json

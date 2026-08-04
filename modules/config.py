@@ -46,7 +46,7 @@ class Config(BaseSettings):
     # - groq/compound, groq/compound-mini: 70K tokens/min, No limit tokens/day (high throughput)
     # - openai/gpt-oss-120b, openai/gpt-oss-20b: 30 req/min, 1K req/day, 8K tokens/min, 200K tokens/day
     groq_models: str = Field(
-        default="llama-3.1-8b-instant,qwen/qwen3-32b,moonshotai/kimi-k2-instruct,meta-llama/llama-4-scout-17b-16e-instruct,llama-3.3-70b-versatile,openai/gpt-oss-120b,openai/gpt-oss-20b",
+        default="llama-3.3-70b-versatile,openai/gpt-oss-120b,llama-3.1-8b-instant,qwen/qwen3.6-27b",
         alias="GROQ_MODELS"
     )
     

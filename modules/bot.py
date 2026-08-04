@@ -73,6 +73,10 @@ class SupportBot:
         self._sla_ping_enabled = True
         self._sla_ping_minutes = 15               # повторный пинг, если запрос никто не взял
         self._lifecycle_task = None
+        # AI-обработка медиа и отчеты
+        self._ai_voice_enabled = True             # расшифровка голосовых через Whisper
+        self._ai_vision_enabled = True            # разбор фото/скриншотов vision-моделью
+        self._weekly_report_enabled = True        # еженедельный отчет админам
         try:
             from chatgpt_md_converter import telegram_format as _md_to_html
             self._md_to_html = _md_to_html
@@ -108,6 +112,9 @@ class SupportBot:
             "auto_close_text",
             "sla_ping_enabled",
             "sla_ping_minutes",
+            "ai_voice_enabled",
+            "ai_vision_enabled",
+            "weekly_report_enabled",
         ]
         rows = await SystemConfig.filter(key__in=keys).all()
         values = {r.key: (r.value or "") for r in rows}
@@ -170,6 +177,9 @@ class SupportBot:
         self._auto_close_after_minutes = _as_int("auto_close_after_minutes", 720, minimum=5)
         self._sla_ping_enabled = _as_bool("sla_ping_enabled", True)
         self._sla_ping_minutes = _as_int("sla_ping_minutes", 15, minimum=1)
+        self._ai_voice_enabled = _as_bool("ai_voice_enabled", True)
+        self._ai_vision_enabled = _as_bool("ai_vision_enabled", True)
+        self._weekly_report_enabled = _as_bool("weekly_report_enabled", True)
         if (values.get("auto_close_reminder_text") or "").strip():
             self._auto_close_reminder_text = values["auto_close_reminder_text"].strip()
         if (values.get("auto_close_text") or "").strip():
@@ -1527,6 +1537,8 @@ class SupportBot:
                     await self._run_auto_close()
                 if self._sla_ping_enabled:
                     await self._run_sla_ping()
+                if self._weekly_report_enabled:
+                    await self._maybe_send_weekly_report()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1598,6 +1610,47 @@ class SupportBot:
                     )
         except Exception as e:
             logger.warning(f"Failed to update topic on auto-close: {e}")
+
+    async def _maybe_send_weekly_report(self):
+        """Еженедельный отчет админам: по понедельникам после 06:00 UTC (09:00 МСК)"""
+        from datetime import datetime, timezone as _tz
+        now = datetime.now(_tz.utc)
+        if now.weekday() != 0 or now.hour < 6:
+            return
+        week_key = now.strftime("%G-W%V")
+        try:
+            row = await SystemConfig.get_or_none(key="weekly_report_last_sent")
+            if row and (row.value or "").strip() == week_key:
+                return
+        except Exception:
+            return
+        admin_ids = self.config.get_admin_ids()
+        if not admin_ids:
+            return
+        try:
+            from modules import stats as stats_mod
+            overview = await stats_mod.collect_overview(days=7)
+            topics = await stats_mod.build_topics_summary(self.ai, days=7)
+            text = stats_mod.format_report_text(overview, topics)
+        except Exception as e:
+            logger.warning(f"Weekly report build failed: {e}")
+            return
+        sent = False
+        for admin_id in admin_ids:
+            try:
+                await self.application.bot.send_message(chat_id=admin_id, text=text)
+                sent = True
+            except Exception as e:
+                logger.warning(f"Weekly report send to {admin_id} failed: {e}")
+        if sent:
+            try:
+                await SystemConfig.update_or_create(
+                    key="weekly_report_last_sent",
+                    defaults={"value": week_key, "description": "Еженедельный отчет: последняя отправка"},
+                )
+                logger.info(f"Weekly report sent for {week_key}")
+            except Exception as e:
+                logger.warning(f"Weekly report mark failed: {e}")
 
     async def _run_sla_ping(self):
         from datetime import datetime, timedelta, timezone as _tz
@@ -1739,7 +1792,12 @@ class SupportBot:
         if msg.text and not msg.caption:
             return {"kind": "text", "text": msg.text, "file_id": None, "message_id": msg.message_id}
         if msg.photo:
-            return {"kind": "photo", "text": msg.caption or "", "file_id": msg.photo[-1].file_id, "message_id": msg.message_id}
+            # Для AI-vision берем размер до ~800px (меньше токенов), для пересылки хватает
+            photo = msg.photo[0]
+            for size in msg.photo:
+                if (size.width or 0) <= 800:
+                    photo = size
+            return {"kind": "photo", "text": msg.caption or "", "file_id": photo.file_id, "message_id": msg.message_id}
         if msg.video:
             return {"kind": "video", "text": msg.caption or "", "file_id": msg.video.file_id, "message_id": msg.message_id}
         if msg.audio:
@@ -1824,6 +1882,40 @@ class SupportBot:
                 )
             except Exception:
                 pass
+        return msg
+
+    async def _download_tg_file(self, file_id: str, max_size: int = 25 * 1024 * 1024):
+        """Скачать файл из Telegram (для Whisper/vision)"""
+        try:
+            f = await self.application.bot.get_file(file_id)
+            if getattr(f, "file_size", None) and f.file_size > max_size:
+                logger.warning(f"Telegram file too large for AI processing: {f.file_size}")
+                return None
+            data = await f.download_as_bytearray()
+            return bytes(data)
+        except Exception as e:
+            logger.warning(f"Failed to download telegram file: {e}")
+            return None
+
+    async def _transcribe_voice_message(self, info: dict):
+        """Расшифровать голосовое/аудио через Whisper"""
+        if not info.get("file_id"):
+            return None
+        data = await self._download_tg_file(info["file_id"])
+        if not data:
+            return None
+        filename = "voice.mp4" if info.get("kind") == "video_note" else "voice.ogg"
+        return await self.ai.transcribe_audio(data, filename)
+
+    async def _photo_to_data_url(self, info: dict):
+        """Фото -> data URL для vision-модели"""
+        if not info.get("file_id"):
+            return None
+        data = await self._download_tg_file(info["file_id"], max_size=10 * 1024 * 1024)
+        if not data:
+            return None
+        import base64
+        return "data:image/jpeg;base64," + base64.b64encode(data).decode()
 
     async def _send_to_client(self, client_chat_id: int, info: dict):
         header = await self.application.bot.send_message(chat_id=client_chat_id, text="👨‍💼 Менеджер поддержки")
@@ -2193,7 +2285,7 @@ class SupportBot:
         chat = await self.db.get_chat_by_user_id(user_id)
         if not chat:
             chat = await self.db.create_chat(user_id=user_id, username=user.username, first_name=user.first_name, last_name=user.last_name)
-        await self._save_message_to_db(chat.id, user_id, info, "user")
+        saved_msg = await self._save_message_to_db(chat.id, user_id, info, "user")
         if chat.status == "waiting_manager":
             try:
                 await self._forward_to_manager(chat, user, info, update)
@@ -2212,7 +2304,44 @@ class SupportBot:
         # AI отключен менеджером (/ai off) — бот молчит, диалог ведет менеджер через топик
         if getattr(chat, "ai_disabled", False):
             return
+        # Определяем вопрос для AI: текст, расшифровка голосового или изображение
+        question_text = None
+        image_data_url = None
+        transcript = None
         if info["kind"] == "text":
+            question_text = info["text"]
+        elif info["kind"] in ("voice", "audio", "video_note") and self._ai_voice_enabled:
+            transcript = await self._transcribe_voice_message(info)
+            if transcript:
+                question_text = transcript
+        elif info["kind"] == "photo" and self._ai_vision_enabled:
+            image_data_url = await self._photo_to_data_url(info)
+            if image_data_url:
+                question_text = (info.get("text") or "").strip() or (
+                    "Клиент прислал изображение (вероятно, скриншот ошибки или экрана приложения). "
+                    "Определи, что на нём изображено, и помоги решить проблему."
+                )
+
+        if transcript:
+            # Сохраняем расшифровку в историю (веб-панель и контекст AI)
+            try:
+                from modules.database import Message as MessageModel
+                if saved_msg:
+                    await MessageModel.filter(id=saved_msg.id).update(content=f"[voice] {transcript}", text=transcript)
+            except Exception:
+                pass
+            if self._group_id:
+                try:
+                    thread_id = await self._ensure_group_topic(chat)
+                    if thread_id:
+                        await self.application.bot.send_message(
+                            chat_id=self._group_id, text=f"🎙 Расшифровка: {transcript}",
+                            message_thread_id=thread_id, disable_notification=True,
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to send transcript to group: {e}")
+
+        if question_text:
             chat_messages = await self.db.get_chat_messages(chat.id, limit=20)
             chat_history = [{"role": "user" if msg.message_type == "user" else "assistant", "message": msg.content} for msg in chat_messages]
             context_info = {"user_id": user_id, "username": user.username, "first_name": user.first_name, "last_name": user.last_name}
@@ -2223,7 +2352,7 @@ class SupportBot:
                     context_info["account_info"] = account_info
             except Exception as e:
                 logger.warning(f"Support API context failed for user {user_id}: {e}")
-            ai_response = await self.ai.get_ai_answer(info["text"], context_info, chat_history)
+            ai_response = await self.ai.get_ai_answer(question_text, context_info, chat_history, image_data_url=image_data_url)
             if ai_response:
                 await self._save_message_to_db(chat.id, user_id, {"kind": "text", "text": ai_response}, "ai")
                 if any(keyword in ai_response.lower() for keyword in ["менеджер", "пригласить", "подключить"]):
@@ -2250,8 +2379,3 @@ class SupportBot:
             keyboard = [[InlineKeyboardButton("Пригласить менеджера", callback_data=f"request_manager_{chat.id}")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text("Сообщение сохранено. Для обработки медиа подключите менеджера.", reply_markup=reply_markup)
-        if self._group_id and info["kind"] != "text":
-            try:
-                await self._duplicate_to_group(chat, user, info, update, role_hint="client")
-            except Exception as e:
-                logger.error(f"Failed to duplicate client media to group: {e}")
