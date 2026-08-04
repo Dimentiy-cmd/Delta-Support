@@ -18,11 +18,16 @@ async def create_admin():
         username = input("Enter admin username: ")
         password = input("Enter admin password: ")
     
-    # Check if exists
-    if await AdminUser.get_or_none(username=username):
-        logger.error(f"User {username} already exists!")
+    # Если юзер существует — сбрасываем пароль и восстанавливаем доступ
+    existing = await AdminUser.get_or_none(username=username)
+    if existing:
+        existing.password_hash = get_password_hash(password)
+        existing.role = "admin"
+        existing.is_active = True
+        await existing.save()
+        logger.info(f"Password for '{username}' reset, role=admin, account activated!")
         return
-    
+
     await AdminUser.create(
         username=username,
         password_hash=get_password_hash(password),
