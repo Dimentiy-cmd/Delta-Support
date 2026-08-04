@@ -5,19 +5,32 @@ from web.deps import get_current_user
 from modules.bot import SupportBot
 from telegram.constants import ParseMode
 from tortoise.expressions import Q
+from datetime import datetime, timedelta, timezone
 import io
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 
 @router.get("")
-async def list_chats(user: AdminUser = Depends(get_current_user), status: str = Query(None), q: str = Query(None)):
+async def list_chats(
+    user: AdminUser = Depends(get_current_user),
+    status: str = Query(None),
+    q: str = Query(None),
+    mine: bool = Query(False),
+    limit: int = Query(50),
+):
     qs = Chat.all().order_by("-updated_at")
     if status:
         qs = qs.filter(status=status)
+    if mine:
+        qs = qs.filter(assigned_admin_id=user.id)
     if q:
         qv = q.strip()
-        qs = qs.filter(Q(username__icontains=qv) | Q(first_name__icontains=qv) | Q(last_name__icontains=qv))
-    chats = await qs.limit(50)
+        digits = qv.lstrip("-")
+        if digits.isdigit():
+            qs = qs.filter(Q(user_id=int(qv)) | Q(id=int(digits)) | Q(username__icontains=qv) | Q(first_name__icontains=qv) | Q(last_name__icontains=qv))
+        else:
+            qs = qs.filter(Q(username__icontains=qv) | Q(first_name__icontains=qv) | Q(last_name__icontains=qv))
+    chats = await qs.limit(min(max(limit, 1), 200))
     return [
         {
             "id": c.id,
@@ -35,6 +48,73 @@ async def list_chats(user: AdminUser = Depends(get_current_user), status: str = 
         for c in chats
     ]
 
+@router.get("/counts")
+async def chat_counts(user: AdminUser = Depends(get_current_user)):
+    """Количество чатов по статусам — для бейджей на табах фильтра"""
+    active = await Chat.filter(status="active").count()
+    waiting = await Chat.filter(status="waiting_manager").count()
+    closed = await Chat.filter(status="closed").count()
+    mine = await Chat.filter(assigned_admin_id=user.id).exclude(status="closed").count()
+    return {"active": active, "waiting_manager": waiting, "closed": closed, "all": active + waiting + closed, "mine": mine}
+
+
+async def _chat_snippet(chat_id: int) -> str:
+    """Короткое описание проблемы для карточки канбана: сводка AI, если есть, иначе последнее сообщение"""
+    msgs = await Message.filter(chat_id=chat_id).order_by("-id").limit(5).all()
+    for m in msgs:
+        text = getattr(m, "text", None) or m.content or ""
+        if "Сводка:" in text:
+            idx = text.find("Сводка:")
+            snippet = text[idx + len("Сводка:"):].strip()
+            if snippet:
+                return snippet[:220]
+    if msgs:
+        text = getattr(msgs[0], "text", None) or msgs[0].content or ""
+        return text[:220]
+    return ""
+
+
+@router.get("/board")
+async def chats_board(period: str = Query("today"), user: AdminUser = Depends(get_current_user)):
+    """Канбан-доска: чаты за период, сгруппированные по статусу, с кратким описанием проблемы"""
+    now = datetime.now(timezone.utc)
+    if period == "week":
+        since = now - timedelta(days=7)
+    elif period == "month":
+        since = now - timedelta(days=30)
+    else:
+        period = "today"
+        since = now - timedelta(hours=24)
+
+    chats = await Chat.filter(updated_at__gte=since).order_by("-updated_at").limit(300).all()
+
+    columns: dict = {"waiting_manager": [], "active": [], "closed": []}
+    for c in chats:
+        bucket = columns.get(c.status)
+        if bucket is None or len(bucket) >= 60:
+            continue
+        snippet = await _chat_snippet(c.id)
+        name = " ".join(p for p in [c.first_name, c.last_name] if p) or (f"@{c.username}" if c.username else f"ID {c.user_id}")
+        bucket.append({
+            "id": c.id,
+            "user_id": c.user_id,
+            "username": c.username,
+            "name": name,
+            "status": c.status,
+            "assigned_admin_id": c.assigned_admin_id,
+            "snippet": snippet,
+            "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None,
+            "updated_at": c.updated_at.isoformat(),
+        })
+
+    return {
+        "period": period,
+        "since": since.isoformat(),
+        "columns": columns,
+        "counts": {k: len(v) for k, v in columns.items()},
+    }
+
+
 @router.get("/{chat_id}")
 async def chat_details(chat_id: int, user: AdminUser = Depends(get_current_user)):
     chat = await Chat.get_or_none(id=chat_id)
@@ -50,6 +130,7 @@ async def chat_details(chat_id: int, user: AdminUser = Depends(get_current_user)
         "status": chat.status,
         "manager_id": chat.manager_id,
         "assigned_admin_id": chat.assigned_admin_id,
+        "last_message_at": chat.last_message_at.isoformat() if chat.last_message_at else None,
         "updated_at": chat.updated_at.isoformat(),
         "topic_id": chat.topic_id,
     }
@@ -69,11 +150,31 @@ async def chat_profile(chat_id: int, user: AdminUser = Depends(get_current_user)
         "status": chat.status,
         "manager_id": chat.manager_id,
         "assigned_admin_id": chat.assigned_admin_id,
+        "last_message_at": chat.last_message_at.isoformat() if chat.last_message_at else None,
         "updated_at": chat.updated_at.isoformat(),
         "created_at": chat.created_at.isoformat() if getattr(chat, "created_at", None) else None,
         "topic_id": chat.topic_id,
         "avatar_url": f"/api/chats/{chat_id}/avatar",
     }
+
+
+@router.get("/{chat_id}/account")
+async def chat_account(chat_id: int, request: Request, force: bool = Query(False), user: AdminUser = Depends(get_current_user)):
+    """Данные аккаунта клиента из Support API (баланс, подписки, ключи) для панели менеджера"""
+    chat = await Chat.get_or_none(id=chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    bot: SupportBot = request.app.state.bot
+    svc = getattr(bot, "user_info", None)
+    if not svc:
+        return {"ok": False, "error": "not_configured"}
+    await svc._refresh_settings()
+    if not svc.is_configured():
+        return {"ok": False, "error": "not_configured"}
+    data = await svc.get_user_info(chat.user_id, force=force)
+    if not data:
+        return {"ok": False, "error": "not_found"}
+    return {"ok": True, **data}
 
 
 @router.get("/{chat_id}/avatar")
@@ -403,6 +504,44 @@ async def send_api_media(
         },
     )
     return {"ok": True, "message_id": msg.id}
+
+
+@router.post("/{chat_id}/ai-suggest")
+async def ai_suggest_reply(chat_id: int, request: Request, user: AdminUser = Depends(get_current_user)):
+    """AI составляет черновик ответа клиенту по истории диалога — менеджер правит перед отправкой"""
+    chat = await Chat.get_or_none(id=chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    bot: SupportBot = request.app.state.bot
+    if not getattr(bot, "ai", None) or not bot.ai.enabled:
+        return {"ok": False, "error": "ai_disabled"}
+
+    messages = list(reversed(await Message.filter(chat_id=chat_id).order_by("-id").limit(20).all()))
+    if not messages:
+        return {"ok": False, "error": "no_messages"}
+
+    last_user_msg = next((m for m in reversed(messages) if m.message_type == "user"), None)
+    question = (
+        (getattr(last_user_msg, "text", None) or last_user_msg.content)
+        if last_user_msg
+        else "Клиент ждёт ответа менеджера, предложи, как продолжить разговор на основе истории."
+    )
+    history = [
+        {"role": "user" if m.message_type == "user" else "assistant", "message": getattr(m, "text", None) or m.content}
+        for m in messages
+    ]
+    ctx = {"user_id": chat.user_id, "username": chat.username, "first_name": chat.first_name, "last_name": chat.last_name}
+    try:
+        account_info = await bot.user_info.get_ai_context(chat.user_id)
+        if account_info:
+            ctx["account_info"] = account_info
+    except Exception:
+        pass
+
+    suggestion = await bot.ai.get_ai_answer(question, ctx, history)
+    if not suggestion:
+        return {"ok": False, "error": "ai_unavailable"}
+    return {"ok": True, "suggestion": suggestion}
 
 
 @router.post("/{chat_id}/join")

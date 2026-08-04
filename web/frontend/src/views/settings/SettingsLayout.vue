@@ -1,7 +1,7 @@
 <template>
   <div class="panel card" style="height: 100%; overflow: hidden;">
-    <div style="display:grid; grid-template-columns: 260px 1fr; height:100%;">
-      <div style="border-right: 1px solid var(--app-border); padding: var(--app-padding);">
+    <div class="settings-layout" style="display:grid; grid-template-columns: 260px 1fr; height:100%;">
+      <div class="settings-nav" style="border-right: 1px solid var(--app-border); padding: var(--app-padding);">
         <div style="font-weight:700; margin: calc(var(--app-gap)*0.25) calc(var(--app-gap)*0.5) calc(var(--app-gap)*0.75);">Настройки</div>
         <div class="muted" style="font-size: 12px; margin: 0 calc(var(--app-gap)*0.5) calc(var(--app-gap)*0.75);">
           Профиль, пользователи, бот

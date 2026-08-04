@@ -18,6 +18,51 @@ def _as_utc(dt):
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
+# Стоп-слова для быстрого (без AI) выделения топ-проблем по частоте слов
+_STOPWORDS = {
+    "и", "в", "не", "на", "с", "что", "я", "а", "как", "это", "по", "мне", "у", "то", "из", "за", "от",
+    "для", "же", "но", "бы", "ли", "он", "она", "они", "мы", "вы", "ты", "его", "её", "их", "есть",
+    "был", "была", "были", "будет", "если", "или", "так", "только", "уже", "еще", "ещё", "при", "до",
+    "после", "там", "тут", "где", "когда", "куда", "почему", "который", "которая", "которые",
+    "вообще", "просто", "очень", "можно", "нужно", "надо", "было", "нет", "да", "привет",
+    "здравствуйте", "добрый", "день", "вечер", "спасибо", "пожалуйста", "могу", "хочу", "хотел",
+    "хотела", "скажите", "подскажите", "почему-то", "себя", "все", "всё", "него", "нему", "тебя",
+    "меня", "мной", "этот", "эта", "эти", "этого", "этой", "этим",
+}
+
+
+def _tokenize(text: str) -> List[str]:
+    import re
+    words = re.findall(r"[а-яёa-z]{4,}", (text or "").lower())
+    return [w for w in words if w not in _STOPWORDS]
+
+
+async def top_keywords(days: int = 7, top_n: int = 10) -> List[Dict]:
+    """Топ слов из сообщений клиентов за период — быстрый способ без AI увидеть, о чём чаще пишут"""
+    from collections import Counter
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    msgs = await Message.filter(created_at__gte=since, message_type="user").all()
+    counter: Counter = Counter()
+    for m in msgs:
+        text = getattr(m, "text", None) or m.content or ""
+        # set(), чтобы одно сообщение не накручивало счётчик повторами одного слова
+        counter.update(set(_tokenize(text)))
+    return [{"word": w, "count": c} for w, c in counter.most_common(top_n)]
+
+
+async def hourly_load(days: int = 7) -> List[int]:
+    """Нагрузка по часам суток (UTC): в какие часы клиенты чаще всего пишут"""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    msgs = await Message.filter(created_at__gte=since, message_type="user").all()
+    buckets = [0] * 24
+    for m in msgs:
+        created = _as_utc(m.created_at)
+        if created:
+            buckets[created.hour] += 1
+    return buckets
+
+
 async def collect_overview(days: int = 14) -> Dict:
     """Сводка метрик за последние N дней"""
     now = datetime.now(timezone.utc)

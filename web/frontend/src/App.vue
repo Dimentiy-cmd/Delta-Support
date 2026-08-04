@@ -11,6 +11,9 @@
           <RouterLink class="rail-btn" to="/chats" title="Чаты">
             <i class="pi pi-comments"></i>
           </RouterLink>
+          <RouterLink class="rail-btn" to="/board" title="Канбан">
+            <i class="pi pi-th-large"></i>
+          </RouterLink>
           <RouterLink v-if="auth.me?.role === 'admin'" class="rail-btn" to="/dashboard" title="Дашборд">
             <i class="pi pi-chart-bar"></i>
           </RouterLink>
@@ -51,6 +54,21 @@
         <router-view />
       </main>
     </div>
+
+    <nav class="mobile-tabbar">
+      <RouterLink class="mobile-tab" to="/chats" title="Чаты">
+        <i class="pi pi-comments"></i><span>Чаты</span>
+      </RouterLink>
+      <RouterLink class="mobile-tab" to="/board" title="Канбан">
+        <i class="pi pi-th-large"></i><span>Канбан</span>
+      </RouterLink>
+      <RouterLink v-if="auth.me?.role === 'admin'" class="mobile-tab" to="/dashboard" title="Дашборд">
+        <i class="pi pi-chart-bar"></i><span>Статистика</span>
+      </RouterLink>
+      <RouterLink v-if="auth.me?.role === 'admin'" class="mobile-tab" to="/settings/appearance" title="Настройки">
+        <i class="pi pi-cog"></i><span>Настройки</span>
+      </RouterLink>
+    </nav>
   </div>
 </template>
 
