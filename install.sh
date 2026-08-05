@@ -250,6 +250,33 @@ if [ "$ENABLE_GROUP" = "y" ] || [ "$ENABLE_GROUP" = "Y" ]; then
   if [ -z "$TELEGRAM_SUPPORT_GROUP_ID" ]; then TELEGRAM_SUPPORT_GROUP_ID="$(prompt "ID Telegram группы (с форумом)" "")"; fi
 fi
 
+say_header "Настройка AI (Groq)"
+info "Это только стартовый ключ для первого запуска — модели, приоритеты и"
+info "дополнительных провайдеров (OpenAI/DeepSeek/др.) удобнее настраивать"
+info "потом в панели: Настройки → AI Провайдеры."
+AI_SUPPORT_API_KEY="${AI_SUPPORT_API_KEY:-}"
+if [ -z "$AI_SUPPORT_API_KEY" ]; then AI_SUPPORT_API_KEY="$(prompt_secret "Groq API ключ (gsk_..., можно оставить пустым и добавить позже в панели)")"; fi
+if [ -n "$AI_SUPPORT_API_KEY" ] && ! is_groq_key "$AI_SUPPORT_API_KEY"; then
+  warn "Ключ не похож на Groq (обычно начинается с gsk_...) — проверьте, если AI не заработает."
+fi
+
+say_header "Support API (опционально)"
+info "Если у вас есть отдельный сервер (например, панель VPN-сервиса) с Support API"
+info "для получения баланса/подписок/ключей клиента по telegram_id — можно подключить"
+info "сразу, либо настроить позже в панели: Настройки → Интеграция и бэкап."
+ENABLE_SUPPORT_API="${ENABLE_SUPPORT_API:-}"
+if [ -z "$ENABLE_SUPPORT_API" ]; then ENABLE_SUPPORT_API="$(prompt "Подключить Support API сейчас? (y/n)" "n")"; fi
+SUPPORT_API_ENABLED="false"
+SUPPORT_API_URL=""
+SUPPORT_API_TOKEN=""
+if [ "$ENABLE_SUPPORT_API" = "y" ] || [ "$ENABLE_SUPPORT_API" = "Y" ]; then
+  SUPPORT_API_ENABLED="true"
+  SUPPORT_API_URL="${SUPPORT_API_URL:-}"
+  if [ -z "$SUPPORT_API_URL" ]; then SUPPORT_API_URL="$(prompt "Базовый URL сервера (например https://example.com)" "")"; fi
+  SUPPORT_API_TOKEN="${SUPPORT_API_TOKEN:-}"
+  if [ -z "$SUPPORT_API_TOKEN" ]; then SUPPORT_API_TOKEN="$(prompt_secret "Support API токен (sup_...)")"; fi
+fi
+
 sanitize_one_line() {
   local v="${1:-}"
   v="${v//$'\r'/}"
@@ -281,6 +308,10 @@ TELEGRAM_MANAGER_IDS="$(sanitize_one_line "$TELEGRAM_MANAGER_IDS")"
 TELEGRAM_GROUP_MODE="$(sanitize_one_line "$TELEGRAM_GROUP_MODE")"
 TELEGRAM_SUPPORT_GROUP_ID="$(sanitize_one_line "$TELEGRAM_SUPPORT_GROUP_ID")"
 APP_PORT="$(sanitize_one_line "$APP_PORT")"
+AI_SUPPORT_API_KEY="$(sanitize_one_line "$AI_SUPPORT_API_KEY")"
+SUPPORT_API_ENABLED="$(sanitize_one_line "$SUPPORT_API_ENABLED")"
+SUPPORT_API_URL="$(sanitize_one_line "$SUPPORT_API_URL")"
+SUPPORT_API_TOKEN="$(sanitize_one_line "$SUPPORT_API_TOKEN")"
 
 JWT_SECRET_KEY="$(generate_secret)"
 POSTGRES_USER="delta_support"
@@ -299,6 +330,10 @@ set_dotenv TELEGRAM_ADMIN_IDS "$TELEGRAM_ADMIN_IDS"
 set_dotenv TELEGRAM_MANAGER_IDS "$TELEGRAM_MANAGER_IDS"
 set_dotenv TELEGRAM_GROUP_MODE "$TELEGRAM_GROUP_MODE"
 set_dotenv TELEGRAM_SUPPORT_GROUP_ID "$TELEGRAM_SUPPORT_GROUP_ID"
+set_dotenv AI_SUPPORT_API_KEY "$AI_SUPPORT_API_KEY"
+set_dotenv SUPPORT_API_ENABLED "$SUPPORT_API_ENABLED"
+set_dotenv SUPPORT_API_URL "$SUPPORT_API_URL"
+set_dotenv SUPPORT_API_TOKEN "$SUPPORT_API_TOKEN"
 set_dotenv POSTGRES_USER "$POSTGRES_USER"
 set_dotenv POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
 set_dotenv POSTGRES_DB "$POSTGRES_DB"
@@ -337,5 +372,16 @@ echo ""
 info "Веб-интерфейс: http://${PUBLIC_IP}:${APP_PORT}/"
 info "Логин/пароль по умолчанию: admin / admin123"
 warn "Сразу после входа поменяйте пароль пользователя admin."
+echo ""
+info "Дальше всё настраивается в панели (Настройки):"
+info "  • Bot & AI — приветствие, системный промпт, включение AI"
+info "  • AI Провайдеры — Groq/OpenAI-совместимые модели, приоритеты, vision-модели"
+info "    (для распознавания фото и расшифровки голосовых нужна vision-модель, см. Автоматизация)"
+info "  • AI контекст — FAQ, тарифы, инструкции для ответов бота"
+info "  • База знаний — статьи, которые AI использует для точных ответов"
+info "  • Telegram топики — режим форум-группы для менеджеров"
+info "  • Интеграция и бэкап — Support API, экспорт/импорт настроек"
+info "  • Автоматизация — автозакрытие чатов, SLA-пинги, голосовые/фото, отчёты"
+info "Подробности — в docs/ и README.md."
 echo ""
 
