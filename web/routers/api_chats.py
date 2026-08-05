@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import Response
 from modules.database import Chat, Message, AdminUser
@@ -7,6 +9,20 @@ from telegram.constants import ParseMode
 from tortoise.expressions import Q
 from datetime import datetime, timedelta, timezone
 import io
+
+logger = logging.getLogger(__name__)
+
+
+def _notify_client_background(bot: SupportBot, telegram_user_id: int, text: str):
+    """Уведомление клиенту в Telegram — фоновой задачей, не блокируя HTTP-ответ
+    панели. Если сеть до Telegram зависла/недоступна, кнопка в панели не должна
+    висеть в ожидании этого запроса — статус в БД уже обновлён к этому моменту."""
+    async def _send():
+        try:
+            await bot.application.bot.send_message(chat_id=telegram_user_id, text=text)
+        except Exception as e:
+            logger.warning(f"Background notify to {telegram_user_id} failed: {e}")
+    asyncio.create_task(_send())
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 
@@ -293,8 +309,17 @@ async def send_api_message(request: Request, chat_id: int, user: AdminUser = Dep
         pass
     # отправка через бота
     bot: SupportBot = request.app.state.bot
-    header = await bot.application.bot.send_message(chat_id=chat.user_id, text="👨‍💼 Менеджер поддержки")
-    sent_user = await bot.application.bot.send_message(chat_id=chat.user_id, text=text, reply_to_message_id=header.message_id)
+    await bot.refresh_runtime_settings()
+    session_mode = bot._manager_reply_style == "session_header"
+    if session_mode:
+        reply_to = await bot._get_or_create_manager_header(chat.user_id, chat_id)
+        sent_user = await bot.application.bot.send_message(
+            chat_id=chat.user_id, text=text,
+            **({"reply_to_message_id": reply_to} if reply_to else {}),
+        )
+    else:
+        combined = f"{bot._manager_reply_prefix}\n\n{text}"
+        sent_user = await bot.application.bot.send_message(chat_id=chat.user_id, text=combined)
     try:
         await Message.filter(id=msg.id).update(tg_message_id_user=sent_user.message_id)
     except Exception:
@@ -364,13 +389,22 @@ async def send_api_media(
     except Exception:
         pass
     bot: SupportBot = request.app.state.bot
+    await bot.refresh_runtime_settings()
+    session_mode = bot._manager_reply_style == "session_header"
+    reply_kwargs = {}
+    if session_mode:
+        reply_to = await bot._get_or_create_manager_header(chat.user_id, chat_id)
+        if reply_to:
+            reply_kwargs = {"reply_to_message_id": reply_to}
+        final_caption = caption or None
+    else:
+        final_caption = f"{bot._manager_reply_prefix}\n\n{caption}" if caption else bot._manager_reply_prefix
     raw_bytes = await file.read()
     filename = file.filename or "upload"
-    header = await bot.application.bot.send_message(chat_id=chat.user_id, text="👨‍💼 Менеджер поддержки")
     sent_user = None
     media_file_id_for_ws = None
     if media_type == "photo":
-        sent_user = await bot.application.bot.send_photo(chat_id=chat.user_id, photo=io.BytesIO(raw_bytes), caption=caption or None, reply_to_message_id=header.message_id)
+        sent_user = await bot.application.bot.send_photo(chat_id=chat.user_id, photo=io.BytesIO(raw_bytes), caption=final_caption, **reply_kwargs)
         try:
             file_id = sent_user.photo[-1].file_id if sent_user.photo else None
             media_file_id_for_ws = file_id
@@ -378,7 +412,7 @@ async def send_api_media(
         except Exception:
             pass
     elif media_type == "video":
-        sent_user = await bot.application.bot.send_video(chat_id=chat.user_id, video=io.BytesIO(raw_bytes), caption=caption or None, reply_to_message_id=header.message_id)
+        sent_user = await bot.application.bot.send_video(chat_id=chat.user_id, video=io.BytesIO(raw_bytes), caption=final_caption, **reply_kwargs)
         try:
             file_id = getattr(sent_user.video, "file_id", None)
             media_file_id_for_ws = file_id
@@ -387,7 +421,7 @@ async def send_api_media(
             pass
     elif media_type == "audio":
         try:
-            sent_user = await bot.application.bot.send_audio(chat_id=chat.user_id, audio=io.BytesIO(raw_bytes), caption=caption or None, reply_to_message_id=header.message_id)
+            sent_user = await bot.application.bot.send_audio(chat_id=chat.user_id, audio=io.BytesIO(raw_bytes), caption=final_caption, **reply_kwargs)
             try:
                 file_id = getattr(sent_user.audio, "file_id", None)
                 media_file_id_for_ws = file_id
@@ -400,7 +434,7 @@ async def send_api_media(
                 bio.name = filename
             except Exception:
                 pass
-            sent_user = await bot.application.bot.send_document(chat_id=chat.user_id, document=bio, caption=caption or None, reply_to_message_id=header.message_id)
+            sent_user = await bot.application.bot.send_document(chat_id=chat.user_id, document=bio, caption=final_caption, **reply_kwargs)
             try:
                 file_id = getattr(sent_user.document, "file_id", None)
                 media_file_id_for_ws = file_id
@@ -412,7 +446,7 @@ async def send_api_media(
                 pass
     elif media_type == "voice":
         try:
-            sent_user = await bot.application.bot.send_voice(chat_id=chat.user_id, voice=io.BytesIO(raw_bytes), caption=caption or None, reply_to_message_id=header.message_id)
+            sent_user = await bot.application.bot.send_voice(chat_id=chat.user_id, voice=io.BytesIO(raw_bytes), caption=final_caption, **reply_kwargs)
             try:
                 file_id = getattr(sent_user.voice, "file_id", None)
                 media_file_id_for_ws = file_id
@@ -425,7 +459,7 @@ async def send_api_media(
                 bio.name = filename
             except Exception:
                 pass
-            sent_user = await bot.application.bot.send_document(chat_id=chat.user_id, document=bio, caption=caption or None, reply_to_message_id=header.message_id)
+            sent_user = await bot.application.bot.send_document(chat_id=chat.user_id, document=bio, caption=final_caption, **reply_kwargs)
             try:
                 file_id = getattr(sent_user.document, "file_id", None)
                 media_file_id_for_ws = file_id
@@ -441,7 +475,7 @@ async def send_api_media(
             bio.name = filename
         except Exception:
             pass
-        sent_user = await bot.application.bot.send_document(chat_id=chat.user_id, document=bio, caption=caption or None, reply_to_message_id=header.message_id)
+        sent_user = await bot.application.bot.send_document(chat_id=chat.user_id, document=bio, caption=final_caption, **reply_kwargs)
         try:
             file_id = getattr(sent_user.document, "file_id", None)
             media_file_id_for_ws = file_id
@@ -549,7 +583,15 @@ async def join_chat(request: Request, chat_id: int, user: AdminUser = Depends(ge
     chat = await Chat.get_or_none(id=chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
-    await Chat.filter(id=chat_id).update(status="waiting_manager", assigned_admin_id=user.id)
+    # Идемпотентность: этот же менеджер уже подключён — повторный клик не должен
+    # плодить дубликаты системных сообщений и уведомлений клиенту
+    if chat.status == "waiting_manager" and chat.manager_id == user.id:
+        return {"ok": True, "already_joined": True}
+    bot: SupportBot = request.app.state.bot
+    # update_chat_status (а не голый ORM update) — чтобы корректно проставился
+    # waiting_since для SLA-пинга и сбросился sla_notified
+    await bot.db.update_chat_status(chat_id, "waiting_manager", manager_id=user.id)
+    await Chat.filter(id=chat_id).update(assigned_admin_id=user.id)
     try:
         sysmsg = await Message.create(chat_id=chat_id, user_id=chat.user_id, message_type="manager", content="Менеджер подключился", source="system", text="Менеджер подключился")
     except Exception:
@@ -558,11 +600,7 @@ async def join_chat(request: Request, chat_id: int, user: AdminUser = Depends(ge
         await Chat.filter(id=chat_id).update(last_message_at=sysmsg.created_at)
     except Exception:
         pass
-    bot: SupportBot = request.app.state.bot
-    try:
-        await bot.application.bot.send_message(chat_id=chat.user_id, text="👨‍💼 Менеджер подключился к вашему чату. Можете писать сообщение.")
-    except Exception:
-        pass
+    _notify_client_background(bot, chat.user_id, "👨‍💼 Менеджер подключился к вашему чату. Можете писать сообщение.")
     await request.app.state.ws_manager.broadcast("status_changed", {"chat_id": chat_id, "status": "waiting_manager", "assigned_admin_id": user.id})
     try:
         await request.app.state.ws_manager.broadcast(
@@ -587,7 +625,16 @@ async def close_chat(request: Request, chat_id: int, user: AdminUser = Depends(g
     chat = await Chat.get_or_none(id=chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
-    await Chat.filter(id=chat_id).update(status="closed", assigned_admin_id=None, manager_id=None)
+    # Идемпотентность: чат уже закрыт — повторный клик не должен создавать ещё
+    # одно системное сообщение и слать клиенту дубликат уведомления
+    if chat.status == "closed":
+        return {"ok": True, "already_closed": True}
+    bot: SupportBot = request.app.state.bot
+    # update_chat_status (а не голый ORM update) — сбрасывает waiting_since/
+    # reminder_sent_at/sla_notified, иначе автозакрытие и SLA-пинг могут
+    # опираться на устаревшие таймеры закрытого чата
+    await bot.db.update_chat_status(chat_id, "closed")
+    await Chat.filter(id=chat_id).update(assigned_admin_id=None, manager_id=None)
     try:
         sysmsg = await Message.create(chat_id=chat_id, user_id=chat.user_id, message_type="manager", content="Чат закрыт. AI активирован", source="system", text="Чат закрыт. AI активирован", admin_user_id=user.id)
     except Exception:
@@ -596,11 +643,8 @@ async def close_chat(request: Request, chat_id: int, user: AdminUser = Depends(g
         await Chat.filter(id=chat_id).update(last_message_at=sysmsg.created_at)
     except Exception:
         pass
-    bot: SupportBot = request.app.state.bot
-    try:
-        await bot.application.bot.send_message(chat_id=chat.user_id, text="✅ Чат с менеджером закрыт. Теперь вам помогает 🤖 AI-поддержка.")
-    except Exception:
-        pass
+    bot._clear_manager_header(chat_id)
+    _notify_client_background(bot, chat.user_id, "✅ Чат с менеджером закрыт. Теперь вам помогает 🤖 AI-поддержка.")
     await request.app.state.ws_manager.broadcast("status_changed", {"chat_id": chat_id, "status": "closed"})
     try:
         await request.app.state.ws_manager.broadcast(
@@ -625,7 +669,13 @@ async def back_to_ai(request: Request, chat_id: int, user: AdminUser = Depends(g
     chat = await Chat.get_or_none(id=chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
-    await Chat.filter(id=chat_id).update(status="active", assigned_admin_id=None, manager_id=None)
+    # Идемпотентность: сессия уже завершена (чат уже active) — повторный клик
+    # не должен создавать ещё одно системное сообщение и дубликат уведомления
+    if chat.status == "active":
+        return {"ok": True, "already_active": True}
+    bot: SupportBot = request.app.state.bot
+    await bot.db.update_chat_status(chat_id, "active")
+    await Chat.filter(id=chat_id).update(assigned_admin_id=None, manager_id=None, ai_disabled=False)
     try:
         sysmsg = await Message.create(chat_id=chat_id, user_id=chat.user_id, message_type="manager", content="Менеджер завершил сессию. AI активирован", source="system", text="Менеджер завершил сессию. AI активирован", admin_user_id=user.id)
     except Exception:
@@ -634,11 +684,8 @@ async def back_to_ai(request: Request, chat_id: int, user: AdminUser = Depends(g
         await Chat.filter(id=chat_id).update(last_message_at=sysmsg.created_at)
     except Exception:
         pass
-    bot: SupportBot = request.app.state.bot
-    try:
-        await bot.application.bot.send_message(chat_id=chat.user_id, text="👨‍💼 Менеджер завершил сессию. Теперь вам помогает 🤖 AI-поддержка.")
-    except Exception:
-        pass
+    bot._clear_manager_header(chat_id)
+    _notify_client_background(bot, chat.user_id, "👨‍💼 Менеджер завершил сессию. Теперь вам помогает 🤖 AI-поддержка.")
     await request.app.state.ws_manager.broadcast("status_changed", {"chat_id": chat_id, "status": "active"})
     try:
         await request.app.state.ws_manager.broadcast(

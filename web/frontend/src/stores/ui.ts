@@ -13,7 +13,8 @@ export const useUiStore = defineStore('ui', {
     density: (localStorage.getItem('ui_density') as Density) || 'Comfort',
     radius: (localStorage.getItem('ui_radius') as Radius) || 'Default',
     fontSize: (localStorage.getItem('ui_fontSize') as FontSize) || 'M',
-    animations: localStorage.getItem('ui_animations') !== 'false' // true by default
+    animations: localStorage.getItem('ui_animations') !== 'false', // true by default
+    soundEnabled: localStorage.getItem('ui_soundEnabled') !== 'false' // true by default
   }),
   actions: {
     applyAll() {
@@ -88,6 +89,37 @@ export const useUiStore = defineStore('ui', {
       // Legacy function for header button
       this.colorMode = document.body.classList.contains('dark') ? 'light' : 'dark'
       this.applyAll()
+    },
+    setSoundEnabled(v: boolean) {
+      this.soundEnabled = v
+      localStorage.setItem('ui_soundEnabled', v.toString())
+    },
+    toggleSound() {
+      this.setSoundEnabled(!this.soundEnabled)
+    },
+    // Короткий синтезированный "дзинь" — без внешних аудиофайлов, работает офлайн
+    playNotificationSound() {
+      if (!this.soundEnabled) return
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
+        const ctx = new AudioCtx()
+        const now = ctx.currentTime
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(880, now)
+        osc.frequency.setValueAtTime(1175, now + 0.12)
+        gain.gain.setValueAtTime(0.001, now)
+        gain.gain.exponentialRampToValueAtTime(0.18, now + 0.02)
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35)
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.start(now)
+        osc.stop(now + 0.4)
+        osc.onended = () => ctx.close()
+      } catch {
+        // Web Audio недоступен (например, автовоспроизведение заблокировано браузером до первого клика) — тихо игнорируем
+      }
     }
   }
 })

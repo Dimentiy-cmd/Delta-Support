@@ -39,6 +39,7 @@
           </div>
         </div>
         <div class="btn-row">
+          <Button :icon="ui.soundEnabled ? 'pi pi-volume-up' : 'pi pi-volume-off'" text rounded :title="ui.soundEnabled ? 'Звук уведомлений включён' : 'Звук уведомлений выключен'" @click="ui.toggleSound" />
           <Button :icon="ui.colorMode === 'dark' ? 'pi pi-moon' : 'pi pi-sun'" text rounded @click="toggleTheme" />
           <div v-if="auth.me" class="btn-row">
             <Avatar :label="auth.me.username.slice(0, 1).toUpperCase()" shape="circle" />

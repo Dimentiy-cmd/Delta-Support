@@ -51,6 +51,41 @@
         <Textarea v-model="form.bot_welcome_message" rows="5" style="width: 100%;" placeholder="Текст приветствия..." />
       </div>
 
+      <!-- Manager Reply Section -->
+      <div class="panel card" style="padding: var(--app-padding); border-radius: var(--app-radius);">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom: 16px;">
+          <i class="pi pi-user" style="color: var(--app-brand)"></i>
+          <span style="font-weight: 700;">Сообщения менеджера клиенту</span>
+        </div>
+
+        <div class="grid-form">
+          <div class="field full-width">
+            <label class="muted label-small">Текст перед сообщением менеджера</label>
+            <InputText v-model="form.manager_reply_prefix" style="width: 100%;" placeholder="👨‍💼 Менеджер поддержки" />
+          </div>
+
+          <div class="field full-width">
+            <label class="muted label-small" style="margin-bottom: 8px;">Режим показа</label>
+            <div style="display:flex; flex-direction:column; gap:8px;">
+              <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; padding:10px 12px; border:1px solid var(--app-border); border-radius: var(--app-radius);">
+                <input type="radio" value="combined" v-model="form.manager_reply_style" style="margin-top:3px;" />
+                <span>
+                  <b>Одним сообщением</b>
+                  <div class="muted" style="font-size:12px;">Текст менеджера каждый раз приходит одним сообщением: префикс и ответ вместе</div>
+                </span>
+              </label>
+              <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; padding:10px 12px; border:1px solid var(--app-border); border-radius: var(--app-radius);">
+                <input type="radio" value="session_header" v-model="form.manager_reply_style" style="margin-top:3px;" />
+                <span>
+                  <b>Заголовок один раз за сессию</b>
+                  <div class="muted" style="font-size:12px;">Префикс отправляется одним сообщением при первом ответе, дальше все сообщения менеджера в этой сессии идут ответом (reply) на него</div>
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- AI Global Section -->
       <div class="panel card" style="padding: var(--app-padding); border-radius: var(--app-radius);">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom: 16px;">
@@ -112,7 +147,9 @@ const form = ref({
   project_bot_link: '',
   bot_welcome_message: '',
   ai_system_prompt: '',
-  ai_support_enabled: true
+  ai_support_enabled: true,
+  manager_reply_prefix: '👨‍💼 Менеджер поддержки',
+  manager_reply_style: 'combined'
 })
 
 const welcomeHelp = 'Переменные: {first_name}, {username}, {project_name}, {project_bot_link}'

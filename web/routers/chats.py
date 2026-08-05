@@ -64,12 +64,19 @@ async def send_message(
     bot: SupportBot = request.app.state.bot
     try:
         # Отправка пользователю
-        header = await bot.application.bot.send_message(chat_id=chat.user_id, text="👨‍💼 Менеджер поддержки")
-        sent_user = await bot.application.bot.send_message(
-            chat_id=chat.user_id,
-            text=text,
-            reply_to_message_id=header.message_id
-        )
+        await bot.refresh_runtime_settings()
+        session_mode = bot._manager_reply_style == "session_header"
+        if session_mode:
+            reply_to = await bot._get_or_create_manager_header(chat.user_id, chat_id)
+            sent_user = await bot.application.bot.send_message(
+                chat_id=chat.user_id, text=text,
+                **({"reply_to_message_id": reply_to} if reply_to else {}),
+            )
+        else:
+            sent_user = await bot.application.bot.send_message(
+                chat_id=chat.user_id,
+                text=f"{bot._manager_reply_prefix}\n\n{text}"
+            )
         try:
             await Message.filter(id=msg.id).update(tg_message_id_user=sent_user.message_id)
         except Exception:

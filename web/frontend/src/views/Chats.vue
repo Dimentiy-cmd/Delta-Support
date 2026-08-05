@@ -81,6 +81,8 @@
             :icon="connectIcon"
             :label="connectLabel"
             :severity="activeChat.status === 'waiting_manager' ? 'secondary' : 'success'"
+            :loading="connecting"
+            :disabled="connecting"
             @click="toggleConnect"
           />
           <Button
@@ -224,7 +226,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
@@ -233,6 +235,7 @@ import Avatar from 'primevue/avatar'
 import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
 import { useAuthStore } from '@/stores/auth'
+import { useUiStore } from '@/stores/ui'
 import AccountPanel from '@/components/AccountPanel.vue'
 
 type Chat = {
@@ -261,6 +264,7 @@ type Msg = {
 }
 
 const auth = useAuthStore()
+const ui = useUiStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -636,14 +640,54 @@ async function send() {
   scrollBottom()
 }
 
+const connecting = ref(false)
+
 async function joinActive() {
   if (!activeId.value) return
-  await fetch(`/api/chats/${activeId.value}/join`, { method: 'POST', credentials: 'include' })
+  connecting.value = true
+  try {
+    const res = await fetch(`/api/chats/${activeId.value}/join`, { method: 'POST', credentials: 'include' })
+    if (!res.ok) {
+      alert('Не удалось подключиться к чату. Попробуйте ещё раз.')
+      return
+    }
+    // Не ждём WS-подтверждения — обновляем состояние сразу, чтобы кнопка не «зависала»
+    if (activeChat.value) {
+      activeChat.value.status = 'waiting_manager'
+      activeChat.value.assigned_admin_id = auth.me?.id ?? activeChat.value.assigned_admin_id
+      activeChat.value.updated_at = new Date().toISOString()
+      sortChats()
+    }
+    loadCounts()
+  } catch {
+    alert('Ошибка сети. Проверьте соединение и попробуйте ещё раз.')
+  } finally {
+    connecting.value = false
+  }
 }
 
 async function backToAi() {
   if (!activeId.value) return
-  await fetch(`/api/chats/${activeId.value}/ai`, { method: 'POST', credentials: 'include' })
+  connecting.value = true
+  try {
+    const res = await fetch(`/api/chats/${activeId.value}/ai`, { method: 'POST', credentials: 'include' })
+    if (!res.ok) {
+      alert('Не удалось завершить сессию. Попробуйте ещё раз.')
+      return
+    }
+    if (activeChat.value) {
+      activeChat.value.status = 'active'
+      activeChat.value.manager_id = null
+      activeChat.value.assigned_admin_id = null
+      activeChat.value.updated_at = new Date().toISOString()
+      sortChats()
+    }
+    loadCounts()
+  } catch {
+    alert('Ошибка сети. Проверьте соединение и попробуйте ещё раз.')
+  } finally {
+    connecting.value = false
+  }
 }
 
 const connectLabel = computed(() => {
@@ -657,7 +701,7 @@ const connectIcon = computed(() => {
 })
 
 async function toggleConnect() {
-  if (!activeChat.value) return
+  if (!activeChat.value || connecting.value) return
   if (activeChat.value.status === 'waiting_manager') {
     await backToAi()
   } else {
@@ -877,9 +921,36 @@ async function toggleRecord() {
   }
 }
 
+let wsReconnectTimer: number | null = null
+let wsReconnectDelay = 1000
+let wsClosedByUs = false
+
+function scheduleWsReconnect() {
+  if (wsClosedByUs || wsReconnectTimer) return
+  wsReconnectTimer = window.setTimeout(() => {
+    wsReconnectTimer = null
+    setupWS()
+  }, wsReconnectDelay)
+  wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000)
+}
+
 function setupWS() {
+  wsClosedByUs = false
   ws?.close()
   ws = new WebSocket(location.origin.replace('http', 'ws') + '/ws')
+  ws.onopen = () => {
+    wsReconnectDelay = 1000
+    // Соединение могло отсутствовать какое-то время — подтягиваем актуальное состояние,
+    // чтобы не зависеть только от событий, которые могли не дойти
+    loadChats(true)
+    if (activeId.value) loadMessages(activeId.value)
+  }
+  ws.onclose = () => {
+    scheduleWsReconnect()
+  }
+  ws.onerror = () => {
+    ws?.close()
+  }
   ws.onmessage = async (ev) => {
     const msg = JSON.parse(ev.data)
     if (msg.event === 'new_message') {
@@ -910,6 +981,9 @@ function setupWS() {
         addMessage(m)
         await nextTick()
         scrollBottom()
+      } else if (m.source === 'user') {
+        // Новое сообщение клиента в чате, который сейчас не открыт — звук привлекает внимание
+        ui.playNotificationSound()
       }
       loadCounts()
     }
@@ -917,6 +991,10 @@ function setupWS() {
       const chatId = msg.data.chat_id
       const nextStatus = msg.data.status
       const chat = chats.value.find((c) => c.id === chatId)
+      if (nextStatus === 'waiting_manager' && chat?.status !== 'waiting_manager') {
+        // Новая эскалация на менеджера — звук нужен независимо от того, открыт ли этот чат
+        ui.playNotificationSound()
+      }
       if (chat) {
         chat.status = nextStatus
         if ('assigned_admin_id' in msg.data) chat.assigned_admin_id = msg.data.assigned_admin_id
