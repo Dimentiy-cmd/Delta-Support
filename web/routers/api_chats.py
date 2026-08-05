@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import Response
 from modules.database import Chat, Message, AdminUser
@@ -7,6 +9,20 @@ from telegram.constants import ParseMode
 from tortoise.expressions import Q
 from datetime import datetime, timedelta, timezone
 import io
+
+logger = logging.getLogger(__name__)
+
+
+def _notify_client_background(bot: SupportBot, telegram_user_id: int, text: str):
+    """Уведомление клиенту в Telegram — фоновой задачей, не блокируя HTTP-ответ
+    панели. Если сеть до Telegram зависла/недоступна, кнопка в панели не должна
+    висеть в ожидании этого запроса — статус в БД уже обновлён к этому моменту."""
+    async def _send():
+        try:
+            await bot.application.bot.send_message(chat_id=telegram_user_id, text=text)
+        except Exception as e:
+            logger.warning(f"Background notify to {telegram_user_id} failed: {e}")
+    asyncio.create_task(_send())
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 
@@ -567,6 +583,10 @@ async def join_chat(request: Request, chat_id: int, user: AdminUser = Depends(ge
     chat = await Chat.get_or_none(id=chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
+    # Идемпотентность: этот же менеджер уже подключён — повторный клик не должен
+    # плодить дубликаты системных сообщений и уведомлений клиенту
+    if chat.status == "waiting_manager" and chat.manager_id == user.id:
+        return {"ok": True, "already_joined": True}
     bot: SupportBot = request.app.state.bot
     # update_chat_status (а не голый ORM update) — чтобы корректно проставился
     # waiting_since для SLA-пинга и сбросился sla_notified
@@ -580,10 +600,7 @@ async def join_chat(request: Request, chat_id: int, user: AdminUser = Depends(ge
         await Chat.filter(id=chat_id).update(last_message_at=sysmsg.created_at)
     except Exception:
         pass
-    try:
-        await bot.application.bot.send_message(chat_id=chat.user_id, text="👨‍💼 Менеджер подключился к вашему чату. Можете писать сообщение.")
-    except Exception:
-        pass
+    _notify_client_background(bot, chat.user_id, "👨‍💼 Менеджер подключился к вашему чату. Можете писать сообщение.")
     await request.app.state.ws_manager.broadcast("status_changed", {"chat_id": chat_id, "status": "waiting_manager", "assigned_admin_id": user.id})
     try:
         await request.app.state.ws_manager.broadcast(
@@ -608,6 +625,10 @@ async def close_chat(request: Request, chat_id: int, user: AdminUser = Depends(g
     chat = await Chat.get_or_none(id=chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
+    # Идемпотентность: чат уже закрыт — повторный клик не должен создавать ещё
+    # одно системное сообщение и слать клиенту дубликат уведомления
+    if chat.status == "closed":
+        return {"ok": True, "already_closed": True}
     bot: SupportBot = request.app.state.bot
     # update_chat_status (а не голый ORM update) — сбрасывает waiting_since/
     # reminder_sent_at/sla_notified, иначе автозакрытие и SLA-пинг могут
@@ -623,10 +644,7 @@ async def close_chat(request: Request, chat_id: int, user: AdminUser = Depends(g
     except Exception:
         pass
     bot._clear_manager_header(chat_id)
-    try:
-        await bot.application.bot.send_message(chat_id=chat.user_id, text="✅ Чат с менеджером закрыт. Теперь вам помогает 🤖 AI-поддержка.")
-    except Exception:
-        pass
+    _notify_client_background(bot, chat.user_id, "✅ Чат с менеджером закрыт. Теперь вам помогает 🤖 AI-поддержка.")
     await request.app.state.ws_manager.broadcast("status_changed", {"chat_id": chat_id, "status": "closed"})
     try:
         await request.app.state.ws_manager.broadcast(
@@ -651,6 +669,10 @@ async def back_to_ai(request: Request, chat_id: int, user: AdminUser = Depends(g
     chat = await Chat.get_or_none(id=chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
+    # Идемпотентность: сессия уже завершена (чат уже active) — повторный клик
+    # не должен создавать ещё одно системное сообщение и дубликат уведомления
+    if chat.status == "active":
+        return {"ok": True, "already_active": True}
     bot: SupportBot = request.app.state.bot
     await bot.db.update_chat_status(chat_id, "active")
     await Chat.filter(id=chat_id).update(assigned_admin_id=None, manager_id=None, ai_disabled=False)
@@ -663,10 +685,7 @@ async def back_to_ai(request: Request, chat_id: int, user: AdminUser = Depends(g
     except Exception:
         pass
     bot._clear_manager_header(chat_id)
-    try:
-        await bot.application.bot.send_message(chat_id=chat.user_id, text="👨‍💼 Менеджер завершил сессию. Теперь вам помогает 🤖 AI-поддержка.")
-    except Exception:
-        pass
+    _notify_client_background(bot, chat.user_id, "👨‍💼 Менеджер завершил сессию. Теперь вам помогает 🤖 AI-поддержка.")
     await request.app.state.ws_manager.broadcast("status_changed", {"chat_id": chat_id, "status": "active"})
     try:
         await request.app.state.ws_manager.broadcast(

@@ -10,7 +10,7 @@ from web.routers import ws, api_auth, api_chats, api_users, api_settings, api_br
 app = FastAPI(
     title="DELTA-Support Admin Panel",
     description="Админ-панель для управления ботом поддержки",
-    version="1.1.0"
+    version="1.2.0"
 )
 
 # Настройка CORS

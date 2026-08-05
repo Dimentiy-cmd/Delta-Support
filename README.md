@@ -329,6 +329,10 @@ docker compose ps
 
 См. файл [LICENSE](LICENSE).
 
+## 📋 История изменений
+
+Список значимых изменений по версиям — [CHANGELOG.md](CHANGELOG.md).
+
 ## 🤝 Вклад в проект
 
 1. Форкните репозиторий: [Fork](https://github.com/bekjonbegmatov/Delta-Support/fork)
