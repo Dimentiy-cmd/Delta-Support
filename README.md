@@ -1,33 +1,73 @@
 # delta-supportdesk
 
+🤖 AI-платформа поддержки для Telegram: бот с генеративным AI, база знаний, форум-топики для менеджеров и веб-панель управления с чатами, канбан-доской и дашбордом.
 
-🤖 AI-powered support bot for with Telegram integration and WEB panel
-
-![Docker Badge](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=fff&style=flat-square) 
-![PostgreSQL Badge](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=fff&style=flat-square) 
+![Docker Badge](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=fff&style=flat-square)
+![PostgreSQL Badge](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=fff&style=flat-square)
 ![Python Badge](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=fff&style=flat-square)
 ![Vue.js Badge](https://img.shields.io/badge/Vue.js-4FC08D?logo=vuedotjs&logoColor=fff&style=flat-square)
 ![FastAPI Badge](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=fff&style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
+![Banner](https://github.com/bekjonbegmatov/Delta-Support/blob/main/docs/banner.png?raw=true)
 
-![Banner](https://github.com/bekjonbegmatov/Delta-Support/blob/bekjon/fasapi-integration/docs/banner.png?raw=true)
-
-
-
-Delta-supportdesk — платформа для создания Telegram-ботов технической поддержки с генеративной моделью, базой знаний и возможностью передачи диалога менеджеру или администратору. Поддерживает общение через бота, Telegram-группы и веб-панель управления с настройками и кастомизацией.
+Delta-supportdesk — платформа для создания Telegram-ботов технической поддержки: AI отвечает клиентам на основе базы знаний и данных их аккаунта, умеет распознавать голосовые сообщения и разбирать скриншоты, а сложные вопросы передаёт менеджеру — в личку или в форум-топик группы. Веб-панель даёт чаты в реальном времени, канбан-доску, дашборд со статистикой и полную настройку без правки кода.
 
 ## 🚀 Быстрый старт
 
 - Telegram Bot Token (получить у [@BotFather](https://t.me/BotFather))
-- Groq API ключ (опционально, для AI поддержки)
+- Groq API ключ (бесплатно, для AI-ответов) — опционально, можно добавить позже в панели
 
-### Установка
+### Установка одной командой
+
 ```bash
-bash curl -sSL https://raw.githubusercontent.com/bekjonbegmatov/Delta-Support/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/bekjonbegmatov/Delta-Support/main/install.sh | bash
 ```
 
+Скрипт сам поставит Docker (если его нет), спросит токен бота и базовые настройки, сгенерирует секреты и поднимет всё через Docker Compose. Подробный пошаговый разбор — в [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md).
+
+## ✨ Возможности
+
+**AI-поддержка**
+- Несколько AI-провайдеров одновременно (Groq и любой OpenAI-совместимый API) с приоритетом и автопереключением при лимитах/ошибках
+- Отвечает по данным аккаунта клиента, базе знаний и настройкам сервиса — не выдумывает
+- Понимает **голосовые сообщения** (расшифровка через Whisper) и **фото/скриншоты** (vision-модели) — клиенту не нужно печатать текстом, а бот сам разберёт ошибку на скриншоте
+- Лёгкий RAG-отбор: под каждый вопрос в промпт попадают только релевантные статьи базы знаний, а не вся база целиком
+- **Tool calling**: AI сам проверяет статус платежа и данные подписки клиента через Support API; разрушающие действия (сброс устройств, перевыпуск подписки) только с подтверждением клиента кнопкой — см. [docs/AI_TOOL_CALLING.md](docs/AI_TOOL_CALLING.md)
+- Автоматически учится: менеджер одной кнопкой превращает решённый диалог в статью базы знаний
+
+**Telegram-бот**
+- Личные диалоги и режим форум-группы (топик на каждого клиента) — см. [docs/GROUP_SUPPORT_GUIDE.md](docs/GROUP_SUPPORT_GUIDE.md)
+- Команды менеджера в топике: `/info`, `/summary`, `/ai on|off`, `/note`, `/ban`/`/unban`, `/close`
+- Кнопки «Взять в работу» и «Инфо» прямо под уведомлением об эскалации
+
+**Веб-панель**
+- Чаты в реальном времени (WebSocket), поиск по имени/username/Telegram ID, счётчики на фильтрах
+- Канбан-доска по чатам за сегодня/неделю/месяц с кратким описанием проблемы
+- Дашборд: доля решённых AI, среднее время реакции менеджера, топ обращений, нагрузка по часам
+- Полная настройка без переменных окружения: промпты, база знаний, провайдеры, автоматизация — всё в панели
+- Мобильная адаптация
+
+**Автоматизация**
+- Автозакрытие неактивных чатов с напоминанием клиенту, SLA-пинг, если запрос никто не взял
+- Еженедельный отчёт админам в Telegram
+
 ## 📖 Подробная документация
+
+| Раздел | Описание |
+|---|---|
+| [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md) | Пошаговая установка с нуля |
+| [docs/BOT_SETTINGS.md](docs/BOT_SETTINGS.md) | Настройки бота: приветствие, системный промпт, включение AI |
+| [docs/GROUP_SUPPORT_GUIDE.md](docs/GROUP_SUPPORT_GUIDE.md) | Telegram топики: режим форум-группы |
+| [docs/AI_CONTEXT.md](docs/AI_CONTEXT.md) | AI контекст: FAQ, тарифы, инструкции, лёгкий RAG |
+| [docs/AI_PROVIDERS.md](docs/AI_PROVIDERS.md) | AI Провайдеры: Groq/OpenAI-совместимые, приоритеты, vision |
+| [docs/KNOWLEDGE_BASE.md](docs/KNOWLEDGE_BASE.md) | База знаний: статьи, авто-обучение из диалогов |
+| [docs/INTEGRATION_BACKUP.md](docs/INTEGRATION_BACKUP.md) | Интеграция и бэкап: Support API, экспорт/импорт настроек |
+| [docs/AUTOMATION.md](docs/AUTOMATION.md) | Автоматизация: автозакрытие, SLA, голос/фото, отчёты |
+| [docs/DASHBOARD.md](docs/DASHBOARD.md) | Дашборд поддержки и канбан-доска |
+| [docs/AI_TOOL_CALLING.md](docs/AI_TOOL_CALLING.md) | AI tool calling: Support API действия и подтверждение |
+| [docs/SUPPORT_API_SPEC.md](docs/SUPPORT_API_SPEC.md) | Спецификация Support API: точные запросы и ответы для своего сервера |
+| [docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md) | Реверс-прокси и HTTPS: готовые конфиги Caddy и Nginx + Certbot/acme.sh |
 
 ### Получение токенов
 
@@ -41,38 +81,26 @@ bash curl -sSL https://raw.githubusercontent.com/bekjonbegmatov/Delta-Support/ma
 4. BotFather отправит вам токен вида: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`
 5. Сохраните этот токен - он понадобится при установке
 
-**Пример:**
-```
-/newbot
-My Support Bot
-my_support_bot
-```
-
 **Важно:** Никому не показывайте токен! Это секретный ключ доступа к вашему боту.
 
-#### 2. Groq API Key (для AI поддержки)
+#### 2. Groq API Key (для AI-ответов)
 
-Groq предоставляет быстрый и бесплатный доступ к AI моделям.
+Groq предоставляет быстрый и бесплатный доступ к AI-моделям.
 
 1. Перейдите на [https://console.groq.com/](https://console.groq.com/)
 2. Зарегистрируйтесь или войдите в аккаунт
-3. Перейдите в раздел **API Keys** (или **Keys**)
-4. Нажмите **Create API Key**
-5. Скопируйте созданный ключ (начинается с `gsk_...`)
-6. Сохраните ключ - он понадобится при установке
+3. Перейдите в раздел **API Keys**
+4. Нажмите **Create API Key**, скопируйте ключ (начинается с `gsk_...`)
 
-**Альтернатива:** Если не хотите использовать Groq, можно использовать `rule-based` режим (без внешнего API).
+Ключ можно указать при установке (как стартовый провайдер) или добавить/заменить позже в панели: **Настройки → AI Провайдеры**. Там же настраиваются модели, приоритет и дополнительные провайдеры — см. [docs/AI_PROVIDERS.md](docs/AI_PROVIDERS.md).
 
 #### 3. Получение Telegram User ID (для админов/менеджеров)
-
-Чтобы добавить себя как администратора или менеджера, нужно узнать свой Telegram User ID:
 
 1. Найдите бота [@userinfobot](https://t.me/userinfobot) в Telegram
 2. Отправьте команду `/start`
 3. Бот покажет ваш ID (например: `8035667634`)
 4. Используйте этот ID в настройках `TELEGRAM_ADMIN_IDS` или `TELEGRAM_MANAGER_IDS`
 
-**Пример:**
 ```
 TELEGRAM_ADMIN_IDS=8035667634
 TELEGRAM_MANAGER_IDS=8035667634,123456789
@@ -82,70 +110,66 @@ TELEGRAM_MANAGER_IDS=8035667634,123456789
 
 #### Переменные окружения
 
-Основные переменные в файле `.env`:
+Обязательный минимум в `.env` (создаётся из `env.example`):
 
 ```env
-### PROJECT INFO ###
-PROJECT_NAME=DELTA-Support
-PROJECT_DESCRIPTION=AI-powered support bot for VPN projects
-PROJECT_WEBSITE=https://example.com
-PROJECT_BOT_LINK=https://t.me/your_bot
-PROJECT_OWNER_CONTACTS=admin@example.com
-
-### AI CONFIGURATION ###
-AI_SUPPORT_ENABLED=true
-AI_SUPPORT_API_TYPE=groq
-AI_SUPPORT_API_KEY=gsk_your_groq_api_key_here
-
-### DATABASE ###
-DATABASE_URL=postgresql://delta_support:password@postgres:5432/delta_support
-POSTGRES_USER=delta_support
-POSTGRES_PASSWORD=your_secure_password
-POSTGRES_DB=delta_support
-
 ### TELEGRAM BOT ###
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
 TELEGRAM_ADMIN_IDS=8035667634
 TELEGRAM_MANAGER_IDS=8035667634,123456789
 
-### TELEGRAM SUPPORT GROUP (optional) ###
+### DATABASE ###
+DATABASE_URL=postgresql://delta_support:password@postgres:5432/delta_support
+
+### JWT SECRET ###
+JWT_SECRET_KEY=сгенерируйте_через_install.sh_или_вручную
+```
+
+Всё остальное — промпты, база знаний, AI-провайдеры, Support API, автоматизация — настраивается **в панели** и хранится в базе (таблица `system_config`), а не в `.env`. Переменные окружения ниже — это только стартовые значения для первого запуска (main.py подхватывает их один раз, если в базе ещё пусто):
+
+```env
+### AI (стартовый провайдер, дальше — через панель) ###
+AI_SUPPORT_ENABLED=true
+AI_SUPPORT_API_KEY=gsk_your_groq_api_key_here
+
+### TELEGRAM SUPPORT GROUP (опционально) ###
 TELEGRAM_GROUP_MODE=true
 TELEGRAM_SUPPORT_GROUP_ID=-1001234567890
 
-### PROJECT DATABASES (for AI access) ###
-PROJECT_DB_1=postgresql://user:pass@host:5432/dbname
-# Или для SQLite:
-# PROJECT_DB_1=sqlite:///path/to/database.db
+### SUPPORT API (опционально, см. docs/INTEGRATION_BACKUP.md) ###
+SUPPORT_API_ENABLED=false
+SUPPORT_API_URL=
+SUPPORT_API_TOKEN=
 
-### REDIS (optional) ###
+### REDIS ###
 REDIS_HOST=redis
 REDIS_PORT=6379
-REDIS_PASSWORD=
 
 ### APP SETTINGS ###
 APP_PORT=8080
 DEBUG=false
 LOG_LEVEL=INFO
-
-### JWT SECRET ###
-JWT_SECRET_KEY=your_jwt_secret_key_here
 ```
 
 #### Подключение внешних баз данных
 
-Если ваша база данных находится в другом Docker контейнере или на хосте, см. [DB_CONNECTION_EXAMPLE.md](docs/DB_CONNECTION_EXAMPLE.md) для подробных инструкций.
+Если ваша база данных находится в другом Docker контейнере или на хосте, см. раздел «Подключение внешней базы данных» в [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md#подключение-внешней-базы-данных) для подробных инструкций.
 
 **Быстрый вариант (БД на хосте):**
 ```env
 PROJECT_DB_1=postgresql://user:pass@host.docker.internal:5432/dbname
 ```
 
-**БД в другом контейнере:**
-1. Подключите контейнеры к одной сети Docker
-2. Используйте имя контейнера вместо localhost:
-```env
-PROJECT_DB_1=postgresql://user:pass@container_name:5432/dbname
-```
+**БД в другом контейнере:** подключите контейнеры к одной Docker-сети и используйте имя контейнера вместо localhost.
+
+## 🎛️ Панель управления
+
+После установки панель доступна по `http://<сервер>:<APP_PORT>/`. Логин по умолчанию — `admin` / `admin123`, **смените пароль сразу после первого входа** (Настройки → Профиль).
+
+- **Чаты** — все диалоги в реальном времени, поиск, фильтры по статусу и «Мои чаты», карточка аккаунта клиента (баланс/подписки/ключи из Support API), AI-подсказка ответа менеджеру, сохранение диалога в базу знаний одной кнопкой
+- **Канбан** — чаты за сегодня/неделю/месяц по колонкам статуса с кратким описанием проблемы, клик — переход в чат
+- **Дашборд** — метрики, график по дням, топ слов в обращениях, нагрузка по часам, AI-темы недели
+- **Настройки** — Bot & AI, Telegram топики, AI контекст, AI Провайдеры, База знаний, Интеграция и бэкап, Автоматизация, Медиа, Профиль, Пользователи
 
 ## 🎮 Использование
 
@@ -153,90 +177,62 @@ PROJECT_DB_1=postgresql://user:pass@container_name:5432/dbname
 
 1. Найдите бота в Telegram по имени, указанному в `PROJECT_BOT_LINK`
 2. Отправьте команду `/start`
-3. Вы увидите меню с кнопками:
-   - **❓ Частые вопросы** - Просмотр FAQ
-   - **📖 Инструкции** - Инструкции по использованию
-   - **💬 Задать вопрос** - Задать вопрос напрямую
-4. Начните общаться с ботом - AI поможет ответить на ваши вопросы
-5. Если AI не может решить вопрос, нажмите кнопку "Пригласить менеджера"
+3. Меню: **❓ Частые вопросы**, **📖 Инструкции**, **💬 Задать вопрос**
+4. Пишите вопросы текстом, голосовым сообщением или пришлите скриншот ошибки — AI поймёт и ответит
+5. Если AI не может решить вопрос, нажмите «Пригласить менеджера»
 
 ### Для администраторов и менеджеров
 
-#### Команды
+#### Команды в личке с ботом
 
 - `/start` - Главное меню с кнопками
 - `/chats` - Просмотр всех чатов
-- `/close <chat_id>` - Закрыть чат (личные диалоги)
-- `/close` — внутри форум‑топика группы: завершить сессию менеджера, вернуть ИИ; тема становится зелёной до нового сообщения клиента
-- `/help` - Справка
+- `/close <chat_id>` - Закрыть чат
 
-#### Интерактивные кнопки
+#### Команды внутри форум-топика клиента (режим группы)
 
-При отправке `/start` админы и менеджеры видят меню с кнопками:
-
-- **📋 Все чаты** - Просмотр всех чатов
-- **🟡 Ожидают менеджера** - Чаты, ожидающие подключения менеджера
-- **🟢 Активные чаты** - Только активные чаты
-- **❓ Помощь** - Справка по использованию
-
-В каждом чате доступны кнопки:
-- **👨‍💼 Присоединиться к чату** - Подключиться к чату для общения с пользователем
-- **🔴 Закрыть чат** - Закрыть чат
-- **◀️ Назад** - Вернуться к списку чатов
+- `/info` — карточка клиента из Support API (баланс, подписки, ключи)
+- `/summary` — AI-сводка текущего диалога
+- `/ai on` / `/ai off` — включить/выключить AI-ответы для этого чата
+- `/note <текст>` — внутренняя заметка, клиенту не отправляется
+- `/ban` / `/unban` — заблокировать/разблокировать клиента
+- `/close` — завершить сессию менеджера, вернуть AI
 
 #### Работа с чатами
 
-1. Получите уведомление о новом запросе на поддержку
-2. Нажмите "Просмотреть чат" в уведомлении
-3. Нажмите "Присоединиться к чату"
-4. Начните общаться с пользователем - ваши сообщения автоматически пересылаются ему
-5. Сообщения пользователя автоматически пересылаются вам
+1. Уведомление о новом запросе приходит в топик и в личку менеджерам
+2. Кнопка «🙋 Взять в работу» закрепляет чат за менеджером
+3. Сообщения менеджера пересылаются клиенту с сохранением типа и медиа
+4. `/close` (или кнопка в панели) завершает сессию и возвращает AI
 
-### Режим группы поддержки (форум‑топики)
+### Режим группы поддержки (форум-топики)
 
-- Включение: установите `TELEGRAM_GROUP_MODE=true` и `TELEGRAM_SUPPORT_GROUP_ID=<ID супер‑группы>`
-- Для каждого клиента создаётся отдельный форум‑топик
-- При первом сообщении клиента в топике публикуется и закрепляется карточка клиента (username, chat ID, user ID). Дальше сообщения идут без повторной «шапки»
-- Сообщения клиента и ответы ИИ дублируются в соответствующий топик; сообщения менеджера из топика отправляются клиенту с сохранением типа и медиа (по `file_id`)
-- Статусы темы по эмодзи:
-  - 🔴 — новое сообщение клиента (ожидает ответа)
-  - 🟡 — ответ менеджера дан
-  - 🤖 — ответ ИИ
-  - 🟢 — после `/close` (ИИ активен; “спокойный” режим до следующего сообщения клиента)
-- До запроса менеджера сообщения в топик отправляются без уведомлений (mute)
-- При «Позвать менеджера»:
-  - Топик переименовывается в режим ожидания менеджера
-  - В топик отправляется краткая сводка от ИИ по последнему сообщению клиента (“Кратко: …”) для быстрой ориентации
-- Сервисные сообщения форума (создание/переименование/закрытие/открытие топика) автоматически удаляются, чтобы не засорять ленту
-- Если топик был удалён, бот автоматически создаёт новый, обновляет привязки и повторяет операцию (дублирование/закреп/переименование)
+Подробное руководство: [docs/GROUP_SUPPORT_GUIDE.md](docs/GROUP_SUPPORT_GUIDE.md).
 
-Подробнее: [GROUP_SUPPORT_GUIDE.md](docs/GROUP_SUPPORT_GUIDE.md)
-
+Кратко: включается `TELEGRAM_GROUP_MODE=true` и `TELEGRAM_SUPPORT_GROUP_ID`, на каждого клиента создаётся топик со статусом по цвету (🔴 ждёт ответа, 🟡 ответил менеджер, 🤖 ответил AI, 🟢 закрыт), карточка клиента закрепляется при первом сообщении, сервисные сообщения форума автоматически чистятся.
 
 ## 🏗️ Структура проекта
 
 ```
-DELTA-Support/
-├── modules/              # Модули приложения
-│   ├── bot.py           # Telegram бот
-│   ├── ai_support.py    # AI поддержка
-│   ├── database.py      # Работа с БД
-│   └── config.py        # Конфигурация
-├── scripts/             # Скрипты
-│   ├── install.sh       # Скрипт установки
-│   └── migrate_bigint.py # Миграция БД
-├── data/                # Данные приложения
-├── logs/                # Логи
-├── config/              # Конфигурационные файлы
-├── migrations/          # Миграции БД
-├── docker-compose.yml   # Docker Compose конфигурация
-├── Dockerfile           # Docker образ
-├── requirements.txt     # Python зависимости
-├── main.py              # Точка входа
-├── env.example          # Пример .env файла
-├── README.md            # Документация
-├── DB_CONNECTION_EXAMPLE.md # Примеры подключения БД
-└── CONNECTION_GUIDE.md  # Руководство по подключению
+Delta-Support/
+├── modules/                  # Backend-логика
+│   ├── bot.py                # Telegram-бот: диалоги, топики, автоматизация
+│   ├── ai_support.py         # AI: провайдеры, RAG-отбор БЗ, tool calling
+│   ├── user_info.py          # Клиент Support API + owner-check для действий
+│   ├── stats.py              # Метрики для дашборда и еженедельного отчёта
+│   ├── database.py           # Модели Tortoise ORM
+│   └── config.py             # Конфигурация из .env
+├── web/                       # FastAPI + Vue 3 админ-панель
+│   ├── routers/               # API: chats, settings, ai, kb, stats, auth...
+│   └── frontend/              # Vue 3 SPA (Чаты, Канбан, Дашборд, Настройки)
+├── scripts/                   # Вспомогательные скрипты (миграции и т.п.)
+├── docs/                      # Документация (этот список)
+├── docker-compose.yml         # Docker Compose конфигурация
+├── Dockerfile                 # Docker образ (multi-stage: сборка SPA + backend)
+├── requirements.txt            # Python-зависимости (версии зафиксированы)
+├── main.py                    # Точка входа (FastAPI + бот в одном процессе)
+├── install.sh                 # Скрипт автоустановки
+└── env.example                 # Пример .env файла
 ```
 
 ## 🔧 Управление
@@ -244,49 +240,34 @@ DELTA-Support/
 ### Просмотр логов
 
 ```bash
-# Все логи
-docker compose logs -f
-
-# Только логи приложения
-docker compose logs -f app
-
-# Последние 50 строк
-docker compose logs --tail 50 app
+docker compose logs -f            # все логи
+docker compose logs -f app        # только логи приложения
+docker compose logs --tail 50 app # последние 50 строк
 ```
 
-### Остановка
+### Остановка / перезапуск
 
 ```bash
 docker compose down
-```
-
-### Перезапуск
-
-```bash
 docker compose restart app
 ```
 
 ### Обновление
 
 ```bash
-# Остановить контейнеры
 docker compose down
-
-# Обновить код (если используете git)
 git pull
-
-# Пересобрать и запустить
-docker compose build
+docker compose build app
 docker compose up -d
 ```
 
-### Резервное копирование базы данных
+### Резервное копирование
 
+**Настройки, промпты и база знаний** — экспортируются одним JSON прямо из панели (Настройки → Интеграция и бэкап → «Скачать экспорт»), без чатов. Подробнее: [docs/INTEGRATION_BACKUP.md](docs/INTEGRATION_BACKUP.md).
+
+**База данных целиком** (включая историю чатов):
 ```bash
-# Создать бэкап
 docker compose exec postgres pg_dump -U delta_support delta_support > backup.sql
-
-# Восстановить из бэкапа
 docker compose exec -T postgres psql -U delta_support delta_support < backup.sql
 ```
 
@@ -294,185 +275,78 @@ docker compose exec -T postgres psql -U delta_support delta_support < backup.sql
 
 ### Локальная разработка без Docker
 
-1. **Установите зависимости:**
 ```bash
 pip install -r requirements.txt
-```
-
-2. **Настройте переменные окружения:**
-```bash
-cp env.example .env
-nano .env  # Отредактируйте .env файл
-```
-
-3. **Убедитесь, что PostgreSQL запущен:**
-```bash
-# Или используйте Docker для БД
-docker run -d --name postgres-dev \
-  -e POSTGRES_USER=delta_support \
-  -e POSTGRES_PASSWORD=password \
-  -e POSTGRES_DB=delta_support \
-  -p 5432:5432 \
-  postgres:15-alpine
-```
-
-4. **Запустите приложение:**
-```bash
+cp env.example .env  # и отредактируйте
 python main.py
+```
+
+Для фронтенда:
+```bash
+cd web/frontend
+npm install
+npm run build   # собирает в web/static/spa, который отдаёт FastAPI
 ```
 
 ### Тестирование
 
 ```bash
-# Проверка синтаксиса
-python -m py_compile modules/*.py
-
-# Проверка подключения к БД
-docker compose exec app python -c "from modules.database import Database; from modules.config import Config; import asyncio; asyncio.run(Database(Config()).initialize())"
+python -m py_compile modules/*.py web/routers/*.py
 ```
 
 ## 📊 База данных
 
-### Структура таблиц
+Таблицы (Tortoise ORM, `modules/database.py`): `chats`, `messages`, `manager_notifications`, `admin_users`, `system_config` (все настройки панели), `project_databases`, `knowledge_base`, `ai_providers`.
 
-- **chats** - Чаты пользователей
-- **messages** - Сообщения в чатах
-- **manager_notifications** - Уведомления менеджерам
-
-### Миграции
-
-При обновлении структуры БД может потребоваться миграция. Пример миграции для изменения типов данных:
-
-```bash
-docker compose exec postgres psql -U delta_support -d delta_support << 'EOF'
-ALTER TABLE chats ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT;
-ALTER TABLE chats ALTER COLUMN manager_id TYPE BIGINT USING manager_id::BIGINT;
-EOF
-```
+Отдельного механизма миграций нет: при старте `Tortoise.generate_schemas()` создаёт недостающие таблицы, а для SQLite/PostgreSQL добавляются недостающие колонки автоматически (`ADD COLUMN IF NOT EXISTS`) — обновление между версиями не требует ручных SQL-миграций.
 
 ## 🔒 Безопасность
 
-### Рекомендации
-
-1. **Никогда не коммитьте `.env` файл в Git**
-2. **Используйте сильные пароли для PostgreSQL**
-3. **Ограничьте доступ к портам** (используйте firewall)
-4. **Регулярно обновляйте зависимости**
-5. **Используйте HTTPS** для внешних подключений
-6. **Храните токены в безопасном месте**
-
-### Генерация секретных ключей
-
-```bash
-# JWT Secret Key
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-
-# PostgreSQL Password
-openssl rand -base64 32 | tr -d "=+/" | cut -c1-25
-```
+1. **Смените пароль `admin`** сразу после первого входа — дефолтный `admin123` создаётся автоматически на пустой базе
+2. **Никогда не коммитьте `.env`** в Git
+3. Порты PostgreSQL и Redis в `docker-compose.yml` по умолчанию открыты только на `127.0.0.1` — не публикуйте их наружу
+4. Используйте HTTPS (реверс-прокси) для панели в проде — готовые конфиги Caddy и Nginx: [docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)
+5. Support API токен и ключи AI-провайдеров хранятся в БД — ограничьте доступ к панели ролью `admin`
 
 ## 🐛 Решение проблем
 
 ### Бот не отвечает
-
-1. Проверьте логи: `docker compose logs app`
-2. Убедитесь, что токен бота правильный
-3. Проверьте, что бот запущен: `docker compose ps`
-
-### Ошибки подключения к БД
-
-1. Проверьте переменную `DATABASE_URL` в `.env`
-2. Убедитесь, что PostgreSQL контейнер запущен: `docker compose ps postgres`
-3. Проверьте логи БД: `docker compose logs postgres`
+```bash
+docker compose logs app
+docker compose ps
+```
 
 ### AI не отвечает
-
-1. Проверьте `AI_SUPPORT_API_KEY` в `.env`
-2. Убедитесь, что API ключ Groq действителен
-3. Проверьте логи: `docker compose logs app | grep -i ai`
-4. Проверьте лимиты моделей - возможно, достигнут дневной лимит запросов/токенов
-5. Бот автоматически переключится на следующую модель, если текущая недоступна
-
-### AI Model Fallback и лимиты
-
-Бот использует несколько моделей Groq с автоматическим переключением при достижении лимитов. Если одна модель исчерпала лимиты или недоступна, бот автоматически переключается на следующую.
-
-**Рекомендуемые модели (оптимизированы по лимитам, 2025):**
-
-**⭐ Лучшие дневные лимиты:**
-- `llama-3.1-8b-instant` - **30 req/min, 14.4K req/day, 6K tokens/min, 500K tokens/day**
-- `meta-llama/llama-guard-4-12b` - **30 req/min, 14.4K req/day, 15K tokens/min, 500K tokens/day**
-- `allam-2-7b` - **30 req/min, 7K req/day, 6K tokens/min, 500K tokens/day**
-
-**⭐ Лучшие минутные лимиты:**
-- `qwen/qwen3-32b` - **60 req/min, 1K req/day, 6K tokens/min, 500K tokens/day**
-- `moonshotai/kimi-k2-instruct` - **60 req/min, 1K req/day, 10K tokens/min, 300K tokens/day**
-- `moonshotai/kimi-k2-instruct-0905` - **60 req/min, 1K req/day, 10K tokens/min, 300K tokens/day**
-
-**⭐ Высокая пропускная способность:**
-- `groq/compound` - **30 req/min, 250 req/day, 70K tokens/min, No limit (tokens/day)**
-- `groq/compound-mini` - **30 req/min, 250 req/day, 70K tokens/min, No limit (tokens/day)**
-
-**Другие мощные модели:**
-- `meta-llama/llama-4-scout-17b-16e-instruct` - **30 req/min, 1K req/day, 30K tokens/min, 500K tokens/day**
-- `meta-llama/llama-4-maverick-17b-128e-instruct` - **30 req/min, 1K req/day, 6K tokens/min, 500K tokens/day**
-- `llama-3.3-70b-versatile` - **30 req/min, 1K req/day, 12K tokens/min, 100K tokens/day** (мощная, но ограниченная)
-- `openai/gpt-oss-120b` - **30 req/min, 1K req/day, 8K tokens/min, 200K tokens/day**
-- `openai/gpt-oss-20b` - **30 req/min, 1K req/day, 8K tokens/min, 200K tokens/day**
-- `openai/gpt-oss-safeguard-20b` - **30 req/min, 1K req/day, 8K tokens/min, 200K tokens/day**
-
-**Настройка моделей:**
-Измените `GROQ_MODELS` в `.env` для выбора моделей и их порядка. Бот будет пробовать модели в указанном порядке:
-```bash
-GROQ_MODELS=llama-3.1-8b-instant,qwen/qwen3-32b,moonshotai/kimi-k2-instruct,meta-llama/llama-4-scout-17b-16e-instruct,llama-3.3-70b-versatile,openai/gpt-oss-120b,openai/gpt-oss-20b
-```
-
-**Множественные API ключи:**
-Для еще большей надежности можно указать несколько API ключей через `AI_SUPPORT_API_KEYS`:
-```bash
-AI_SUPPORT_API_KEYS=gsk_key1,gsk_key2,gsk_key3
-```
-Бот будет переключаться между ключами и моделями при достижении лимитов.
-
-**Полный список доступных моделей:**
-```bash
-curl -H "Authorization: Bearer YOUR_GROQ_KEY" https://api.groq.com/openai/v1/models
-```
+1. Проверьте провайдеров в панели: Настройки → AI Провайдеры — активен ли хоть один с рабочим ключом
+2. Groq периодически снимает с публикации старые модели — если модель отвечает 404 `model_not_found`, проверьте актуальный список: `curl -H "Authorization: Bearer YOUR_KEY" https://api.groq.com/openai/v1/models`
+3. Голосовые и фото требуют vision-совместимую модель (см. [docs/AI_PROVIDERS.md](docs/AI_PROVIDERS.md)) — без неё бот вернётся к обычному текстовому ответу
 
 ### Уведомления не приходят
-
-1. Проверьте `TELEGRAM_ADMIN_IDS` и `TELEGRAM_MANAGER_IDS` в `.env`
-2. Убедитесь, что ID указаны правильно (через запятую, без пробелов)
-3. Проверьте логи: `docker compose logs app | grep -i notification`
+Проверьте `TELEGRAM_ADMIN_IDS`/`TELEGRAM_MANAGER_IDS` — ID через запятую без пробелов.
 
 ## 📝 Лицензия
 
-Проект создан для использования в VPN проектах. См. файл [LICENSE](LICENSE) для подробностей.
+См. файл [LICENSE](LICENSE).
 
 ## 🤝 Вклад в проект
 
-Приветствуются любые улучшения! Пожалуйста:
-
-1. Создайте Fork проекта: [Fork репозитория](https://github.com/GOFONCK/DELTA-Support/fork)
-2. Создайте ветку для вашей функции (`git checkout -b feature/AmazingFeature`)
-3. Закоммитьте изменения (`git commit -m 'Add some AmazingFeature'`)
-4. Запушьте в ветку (`git push origin feature/AmazingFeature`)
-5. Откройте Pull Request: [Создать PR](https://github.com/GOFONCK/DELTA-Support/compare)
+1. Форкните репозиторий: [Fork](https://github.com/bekjonbegmatov/Delta-Support/fork)
+2. Создайте ветку для фичи (`git checkout -b feature/AmazingFeature`)
+3. Закоммитьте изменения
+4. Откройте Pull Request: [Создать PR](https://github.com/bekjonbegmatov/Delta-Support/compare)
 
 ## 📞 Поддержка
 
-При возникновении проблем:
-
-1. Проверьте [Issues](https://github.com/GOFONCK/DELTA-Support/issues)
-2. Создайте новый Issue с описанием проблемы
-3. Приложите логи: `docker compose logs app > logs.txt`
+1. Проверьте [Issues](https://github.com/bekjonbegmatov/Delta-Support/issues)
+2. Создайте новый Issue с описанием проблемы и логами: `docker compose logs app > logs.txt`
 
 ## 🙏 Благодарности
 
-- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) - Библиотека для работы с Telegram Bot API
-- [Groq](https://groq.com/) - Быстрый AI API
-- [SQLAlchemy](https://www.sqlalchemy.org/) - ORM для работы с базами данных
+- [GOFONCK](https://github.com/GOFONCK) — за первоначальную идею и старт проекта
+- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) — библиотека для Telegram Bot API
+- [Groq](https://groq.com/) — быстрый бесплатный AI API
+- [Tortoise ORM](https://tortoise.github.io/) — async ORM для работы с базой данных
 
 ---
 
-**Сделано с ❤️ для VPN проектов**
+**Сделано с ❤️ для VPN-проектов**

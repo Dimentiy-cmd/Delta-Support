@@ -185,8 +185,13 @@ cd DELTA-Support
 
 2. **Запустите скрипт установки:**
 ```bash
-chmod +x scripts/install.sh
-./scripts/install.sh
+chmod +x install.sh
+./install.sh
+```
+
+Или одной командой, без клонирования вручную:
+```bash
+curl -sSL https://raw.githubusercontent.com/bekjonbegmatov/Delta-Support/main/install.sh | bash
 ```
 
 3. **Следуйте инструкциям скрипта:**
@@ -282,12 +287,11 @@ SERVICE_INSTRUCTIONS="1. Скачайте VPN клиент\n2. Добавьте 
 SERVICE_FEATURES="Безлимитный трафик, серверы в 50+ странах"
 ```
 
-**Вариант 2: Через БД проекта (рекомендуется)**
-1. Создайте таблицу `service_info` в БД проекта (см. [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md))
-2. Подключите БД через `PROJECT_DB_1` в `.env`
-3. AI автоматически будет использовать данные из БД
+**Вариант 2: Через панель (рекомендуется)**
 
-**Приоритет:** БД проекта → .env переменные
+Настройки → AI контекст (`/settings/ai`) — тот же FAQ/тарифы/инструкции, но без пересборки контейнера на каждое изменение. Подробности и как это используется AI — [AI_CONTEXT.md](AI_CONTEXT.md).
+
+**Приоритет:** значения из панели → переменные `.env` (используются только при первом запуске на пустой базе)
 
 ### Расширенная конфигурация
 
@@ -327,8 +331,6 @@ app:
 ```env
 PROJECT_DB_1=postgresql://user:pass@container_name:5432/dbname
 ```
-
-Подробнее см. [DB_CONNECTION_EXAMPLE.md](DB_CONNECTION_EXAMPLE.md).
 
 ## ✅ Проверка работы
 
@@ -410,9 +412,18 @@ INFO | Bot started polling
 
 ## 📚 Дополнительные ресурсы
 
-- [README.md](README.md) - Основная документация
-- [DB_CONNECTION_EXAMPLE.md](DB_CONNECTION_EXAMPLE.md) - Примеры подключения БД
-- [CONNECTION_GUIDE.md](CONNECTION_GUIDE.md) - Руководство по подключению
+- [../README.md](../README.md) - Основная документация и обзор возможностей
+- [BOT_SETTINGS.md](BOT_SETTINGS.md) - Настройки бота и системный промпт
+- [GROUP_SUPPORT_GUIDE.md](GROUP_SUPPORT_GUIDE.md) - Telegram топики (режим группы)
+- [AI_CONTEXT.md](AI_CONTEXT.md) - AI контекст и лёгкий RAG-отбор базы знаний
+- [AI_PROVIDERS.md](AI_PROVIDERS.md) - AI провайдеры, vision-модели, голосовые
+- [KNOWLEDGE_BASE.md](KNOWLEDGE_BASE.md) - База знаний и авто-обучение из диалогов
+- [INTEGRATION_BACKUP.md](INTEGRATION_BACKUP.md) - Support API, экспорт/импорт настроек
+- [SUPPORT_API_SPEC.md](SUPPORT_API_SPEC.md) - Спецификация Support API для своего сервера
+- [AI_TOOL_CALLING.md](AI_TOOL_CALLING.md) - Как AI выполняет действия через Support API
+- [AUTOMATION.md](AUTOMATION.md) - Автозакрытие, SLA, отчёты
+- [DASHBOARD.md](DASHBOARD.md) - Дашборд и канбан-доска
+- [REVERSE_PROXY.md](REVERSE_PROXY.md) - HTTPS и реверс-прокси (Caddy/Nginx)
 
 ## 🆘 Получение помощи
 
