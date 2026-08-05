@@ -24,6 +24,20 @@ def _notify_client_background(bot: SupportBot, telegram_user_id: int, text: str)
             logger.warning(f"Background notify to {telegram_user_id} failed: {e}")
     asyncio.create_task(_send())
 
+
+def _edit_group_topic_background(bot: SupportBot, chat: Chat, role_hint: str = None):
+    """Переименование топика в тг-группе под новый статус — тоже фоновой задачей
+    (edit_forum_topic это тоже поход в Telegram API, по той же причине что и
+    _notify_client_background). Chat.filter(...).update() — bulk-апдейт, он не
+    обновляет переданный объект chat, поэтому статус на нём выставляем здесь же
+    перед вызовом _edit_group_topic_status, которая формирует имя темы из chat.status."""
+    async def _run():
+        try:
+            await bot._edit_group_topic_status(chat, role_hint=role_hint)
+        except Exception as e:
+            logger.warning(f"Background topic rename failed for chat {chat.id}: {e}")
+    asyncio.create_task(_run())
+
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 
 @router.get("")
@@ -617,6 +631,10 @@ async def join_chat(request: Request, chat_id: int, user: AdminUser = Depends(ge
     # waiting_since для SLA-пинга и сбросился sla_notified
     await bot.db.update_chat_status(chat_id, "waiting_manager", manager_id=user.id)
     await Chat.filter(id=chat_id).update(assigned_admin_id=user.id)
+    chat.status = "waiting_manager"
+    chat.manager_id = user.id
+    chat.assigned_admin_id = user.id
+    _edit_group_topic_background(bot, chat, role_hint="manager")
     try:
         sysmsg = await Message.create(chat_id=chat_id, user_id=chat.user_id, message_type="manager", content="Менеджер подключился", source="system", text="Менеджер подключился")
     except Exception:
@@ -660,6 +678,10 @@ async def close_chat(request: Request, chat_id: int, user: AdminUser = Depends(g
     # опираться на устаревшие таймеры закрытого чата
     await bot.db.update_chat_status(chat_id, "closed")
     await Chat.filter(id=chat_id).update(assigned_admin_id=None, manager_id=None)
+    chat.status = "closed"
+    chat.manager_id = None
+    chat.assigned_admin_id = None
+    _edit_group_topic_background(bot, chat, role_hint=None)
     try:
         sysmsg = await Message.create(chat_id=chat_id, user_id=chat.user_id, message_type="manager", content="Чат закрыт. AI активирован", source="system", text="Чат закрыт. AI активирован", admin_user_id=user.id)
     except Exception:
@@ -701,6 +723,11 @@ async def back_to_ai(request: Request, chat_id: int, user: AdminUser = Depends(g
     bot: SupportBot = request.app.state.bot
     await bot.db.update_chat_status(chat_id, "active")
     await Chat.filter(id=chat_id).update(assigned_admin_id=None, manager_id=None, ai_disabled=False)
+    chat.status = "active"
+    chat.manager_id = None
+    chat.assigned_admin_id = None
+    chat.ai_disabled = False
+    _edit_group_topic_background(bot, chat, role_hint=None)
     try:
         sysmsg = await Message.create(chat_id=chat_id, user_id=chat.user_id, message_type="manager", content="Менеджер завершил сессию. AI активирован", source="system", text="Менеджер завершил сессию. AI активирован", admin_user_id=user.id)
     except Exception:

@@ -547,7 +547,7 @@ class SupportBot:
         if user_id not in self.config.get_all_staff_ids():
             return
         
-        # Режим группы: /close без аргументов — закрыть текущий топик и вернуть ИИ
+        # Режим группы: /close без аргументов — закрыть текущий топик (чат закрыт полностью)
         if self._group_id and update.effective_chat and update.effective_chat.id == self._group_id and not context.args:
             thread_id = update.message.message_thread_id if update.message else None
             if not thread_id:
@@ -564,7 +564,7 @@ class SupportBot:
             if not chat_id:
                 await update.message.reply_text("❌ Топик не привязан к чату клиента.")
                 return
-            await self._reopen_chat_ai(chat_id, user_id, thread_id, update)
+            await self.close_chat_from_message(update.message, chat_id, user_id)
             return
         
         # Обычный режим: /close <chat_id> — полностью закрыть чат
@@ -643,6 +643,10 @@ class SupportBot:
         except Exception:
             pass
         self._clear_manager_header(chat_id)
+        try:
+            await self._edit_group_topic_status(chat, role_hint=None)
+        except Exception as e:
+            logger.warning(f"Failed to update group topic on close: {e}")
 
         sysmsg = None
         try:
@@ -681,69 +685,6 @@ class SupportBot:
         except Exception as e:
             logger.error(f"Error notifying user about closed chat: {e}")
 
-    async def _reopen_chat_ai(self, chat_id: int, user_id: int, thread_id: Optional[int], update: Update):
-        """Завершить сессию менеджера в топике группы и вернуть ИИ в активный режим"""
-        chat = await self.db.get_chat_by_id(chat_id)
-        if not chat:
-            await update.message.reply_text("❌ Чат не найден.")
-            return
-        await self.db.update_chat_status(chat_id, "active")
-        # Сбрасываем менеджера и возвращаем AI (мог быть отключен через /ai off)
-        try:
-            from modules.database import Chat as ChatModel
-            await ChatModel.filter(id=chat_id).update(manager_id=None, ai_disabled=False)
-        except Exception:
-            pass
-        self._clear_manager_header(chat_id)
-        try:
-            chat.status = "active"
-        except Exception:
-            pass
-
-        sysmsg = None
-        try:
-            sysmsg = await self.db.add_message(chat_id, chat.user_id, "Менеджер завершил сессию. AI активирован", "system")
-        except Exception as e:
-            logger.warning(f"Failed to save system message on AI reopen: {e}")
-
-        try:
-            if self.ws_manager:
-                await self.ws_manager.broadcast("status_changed", {"chat_id": chat_id, "status": "active"})
-                if sysmsg:
-                    await self.ws_manager.broadcast(
-                        "new_message",
-                        {
-                            "chat_id": chat_id,
-                            "message": {
-                                "id": sysmsg.id,
-                                "text": getattr(sysmsg, "text", None) or sysmsg.content,
-                                "source": getattr(sysmsg, "source", None) or sysmsg.message_type,
-                                "created_at": sysmsg.created_at.isoformat() if sysmsg.created_at else None,
-                                "media_type": getattr(sysmsg, "media_type", None),
-                                "media_file_id": getattr(sysmsg, "media_file_id", None),
-                            },
-                        },
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to broadcast ws updates on AI reopen: {e}")
-        try:
-            await self.application.bot.send_message(
-                chat_id=chat.user_id,
-                text="👨‍💼 Менеджер завершил сессию. Теперь вам помогает 🤖 AI-поддержка."
-            )
-        except Exception as e:
-            logger.warning(f"Failed to notify user about AI reactivation: {e}")
-        try:
-            await update.message.reply_text(f"✅ Чат #{chat_id}: ИИ активирован, тема зелёная до нового сообщения клиента.")
-        except Exception:
-            pass
-        if self.redis:
-            try:
-                self.redis.delete(f"manager_active_chat:{user_id}")
-            except Exception:
-                pass
-        await self._edit_group_topic_status(chat, role_hint=None)
-    
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик нажатий на кнопки"""
         query = update.callback_query
@@ -1798,13 +1739,12 @@ class SupportBot:
     async def _auto_close_chat(self, chat):
         logger.info(f"Auto-closing chat {chat.id} due to inactivity")
         try:
+            # _close_chat уже переименовывает топик под статус "closed"
             await self._close_chat(chat.id, 0, notify_text=self._auto_close_text, reason="автозакрытие по неактивности")
         except Exception as e:
             logger.warning(f"Auto-close failed for chat {chat.id}: {e}")
             return
         try:
-            chat.status = "closed"
-            await self._edit_group_topic_status(chat, role_hint=None)
             if self._group_id and self.redis:
                 thread_id = self.redis.get(f"group_topic:chat:{chat.id}")
                 if thread_id:
