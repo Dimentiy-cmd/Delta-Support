@@ -298,6 +298,8 @@ async def get_bot_settings(user: AdminUser = Depends(get_current_user)):
         "ai_support_api_key",
         "ai_support_api_keys",
         "groq_models",
+        "manager_reply_prefix",
+        "manager_reply_style",
     ]
     rows = await SystemConfig.filter(key__in=keys).all()
     values = {r.key: r.value for r in rows}
@@ -341,11 +343,15 @@ async def get_bot_settings(user: AdminUser = Depends(get_current_user)):
         "ai_support_api_key": "",
         "ai_support_api_keys": "",
         "groq_models": cfg.groq_models or "",
+        "manager_reply_prefix": "👨‍💼 Менеджер поддержки",
+        "manager_reply_style": "combined",
     }
     effective = {}
     for k in defaults.keys():
         raw = values.get(k)
-        if k in ["ai_system_prompt", "bot_welcome_message"] and raw is not None and str(raw).strip() == "":
+        if k in ["ai_system_prompt", "bot_welcome_message", "manager_reply_prefix"] and raw is not None and str(raw).strip() == "":
+            raw = None
+        if k == "manager_reply_style" and raw not in ("combined", "session_header"):
             raw = None
         if k == "ai_support_enabled":
             if raw is None:
@@ -399,12 +405,16 @@ async def put_bot_settings(request: Request, user: AdminUser = Depends(get_curre
         "ai_support_enabled": "AI: enabled",
         "ai_support_api_type": "AI: API type",
         "groq_models": "AI: модели Groq",
+        "manager_reply_prefix": "Бот: текст перед сообщением менеджера",
+        "manager_reply_style": "Бот: режим показа текста менеджера",
     }
     for k, desc in allowed.items():
         if k not in body:
             continue
         v = body.get(k)
-        if v is None or (k in ["ai_system_prompt", "bot_welcome_message"] and str(v).strip() == ""):
+        if k == "manager_reply_style" and v not in (None, "combined", "session_header"):
+            raise HTTPException(status_code=400, detail="manager_reply_style must be 'combined' or 'session_header'")
+        if v is None or (k in ["ai_system_prompt", "bot_welcome_message", "manager_reply_prefix"] and str(v).strip() == ""):
             await SystemConfig.filter(key=k).delete()
         else:
             if k == "ai_support_enabled":

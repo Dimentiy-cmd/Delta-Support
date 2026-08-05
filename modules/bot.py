@@ -77,6 +77,14 @@ class SupportBot:
         # подтверждения клиента: token -> {"expires": ts, "data": {...}}.
         # Fallback на память процесса, если Redis недоступен (TTL 5 минут).
         self._pending_actions_mem = {}
+        # Текст-префикс перед сообщением менеджера клиенту и режим его показа:
+        #   "combined"      — префикс встроен в текст/подпись каждого сообщения
+        #   "session_header" — префикс отправляется один раз за сессию, дальше
+        #                      сообщения менеджера идут ответом (reply) на него
+        self._manager_reply_prefix = "👨‍💼 Менеджер поддержки"
+        self._manager_reply_style = "combined"
+        # Fallback-хранилище message_id заголовка сессии, если Redis недоступен
+        self._manager_header_mem = {}
         # AI-обработка медиа и отчеты
         self._ai_voice_enabled = True             # расшифровка голосовых через Whisper
         self._ai_vision_enabled = True            # разбор фото/скриншотов vision-моделью
@@ -119,6 +127,8 @@ class SupportBot:
             "ai_voice_enabled",
             "ai_vision_enabled",
             "weekly_report_enabled",
+            "manager_reply_prefix",
+            "manager_reply_style",
         ]
         rows = await SystemConfig.filter(key__in=keys).all()
         values = {r.key: (r.value or "") for r in rows}
@@ -188,6 +198,11 @@ class SupportBot:
             self._auto_close_reminder_text = values["auto_close_reminder_text"].strip()
         if (values.get("auto_close_text") or "").strip():
             self._auto_close_text = values["auto_close_text"].strip()
+        if (values.get("manager_reply_prefix") or "").strip():
+            self._manager_reply_prefix = values["manager_reply_prefix"].strip()
+        style_raw = (values.get("manager_reply_style") or "").strip()
+        if style_raw in ("combined", "session_header"):
+            self._manager_reply_style = style_raw
 
         if not self._group_mode_enabled:
             self._group_id = None
@@ -619,6 +634,7 @@ class SupportBot:
             chat.status = "closed"
         except Exception:
             pass
+        self._clear_manager_header(chat_id)
 
         sysmsg = None
         try:
@@ -670,6 +686,7 @@ class SupportBot:
             await ChatModel.filter(id=chat_id).update(manager_id=None, ai_disabled=False)
         except Exception:
             pass
+        self._clear_manager_header(chat_id)
         try:
             chat.status = "active"
         except Exception:
@@ -2098,31 +2115,103 @@ class SupportBot:
         import base64
         return "data:image/jpeg;base64," + base64.b64encode(data).decode()
 
-    async def _send_to_client(self, client_chat_id: int, info: dict):
-        header = await self.application.bot.send_message(chat_id=client_chat_id, text="👨‍💼 Менеджер поддержки")
+    async def _get_or_create_manager_header(self, client_chat_id: int, chat_id: int) -> Optional[int]:
+        """Заголовок '👨‍💼 Менеджер поддержки' для режима session_header: отправляется
+        один раз за сессию, message_id кешируется (Redis, либо память процесса как
+        fallback) — дальнейшие сообщения менеджера идут ответом (reply) на него."""
+        key = f"manager_header:{chat_id}"
+        if self.redis:
+            try:
+                cached = self.redis.get(key)
+                if cached:
+                    return int(cached)
+            except Exception:
+                pass
+        elif chat_id in self._manager_header_mem:
+            return self._manager_header_mem[chat_id]
+
+        try:
+            header = await self.application.bot.send_message(chat_id=client_chat_id, text=self._manager_reply_prefix)
+        except Exception as e:
+            logger.warning(f"Failed to send manager header to {client_chat_id}: {e}")
+            return None
+
+        if self.redis:
+            try:
+                self.redis.set(key, str(header.message_id), ex=60 * 60 * 24)
+            except Exception:
+                pass
+        else:
+            self._manager_header_mem[chat_id] = header.message_id
+        return header.message_id
+
+    def _clear_manager_header(self, chat_id: int):
+        """Сбросить закешированный заголовок сессии — вызывать при завершении
+        сессии менеджера (возврат к AI / закрытие чата), чтобы следующая сессия
+        начиналась со свежего заголовка."""
+        if self.redis:
+            try:
+                self.redis.delete(f"manager_header:{chat_id}")
+            except Exception:
+                pass
+        self._manager_header_mem.pop(chat_id, None)
+
+    async def _ensure_manager_assigned(self, chat_id: int, manager_id: int):
+        """Если менеджер отвечает клиенту, но чат ещё не закреплён явно (не через
+        кнопку «Взять в работу» или /info) — закрепляем автоматически по факту
+        первого ответа, чтобы SLA-пинг и статистика видели, кто ведёт диалог."""
+        from modules.database import Chat as ChatModel
+        chat = await ChatModel.get_or_none(id=chat_id)
+        if not chat or chat.manager_id == manager_id:
+            return
+        await ChatModel.filter(id=chat_id).update(manager_id=manager_id)
+        self._set_manager_active_chat(manager_id, chat_id)
+
+    async def _send_to_client(self, client_chat_id: int, info: dict, chat_id: int):
+        """Отправить сообщение менеджера клиенту с учётом выбранного стиля префикса
+        (combined — префикс в каждом сообщении, session_header — один раз за сессию)"""
         kind = info["kind"]
         text = info.get("text") or ""
         file_id = info.get("file_id")
-        if kind == "text":
-            await self.application.bot.send_message(chat_id=client_chat_id, text=self._md_to_html(text), reply_to_message_id=header.message_id, parse_mode=ParseMode.HTML)
-        elif kind == "photo":
-            await self.application.bot.send_photo(chat_id=client_chat_id, photo=file_id, caption=(self._md_to_html(text) if text else None), reply_to_message_id=header.message_id, parse_mode=ParseMode.HTML)
-        elif kind == "video":
-            await self.application.bot.send_video(chat_id=client_chat_id, video=file_id, caption=(self._md_to_html(text) if text else None), reply_to_message_id=header.message_id, parse_mode=ParseMode.HTML)
-        elif kind == "audio":
-            await self.application.bot.send_audio(chat_id=client_chat_id, audio=file_id, caption=(self._md_to_html(text) if text else None), reply_to_message_id=header.message_id, parse_mode=ParseMode.HTML)
-        elif kind == "voice":
-            await self.application.bot.send_voice(chat_id=client_chat_id, voice=file_id, caption=(self._md_to_html(text) if text else None), reply_to_message_id=header.message_id, parse_mode=ParseMode.HTML)
-        elif kind == "document":
-            await self.application.bot.send_document(chat_id=client_chat_id, document=file_id, caption=(self._md_to_html(text) if text else None), reply_to_message_id=header.message_id, parse_mode=ParseMode.HTML)
-        elif kind == "video_note":
-            await self.application.bot.send_video_note(chat_id=client_chat_id, video_note=file_id, reply_to_message_id=header.message_id)
-        elif kind == "sticker":
-            await self.application.bot.send_sticker(chat_id=client_chat_id, sticker=file_id, reply_to_message_id=header.message_id)
-        elif kind == "animation":
-            await self.application.bot.send_animation(chat_id=client_chat_id, animation=file_id, caption=(self._md_to_html(text) if text else None), reply_to_message_id=header.message_id, parse_mode=ParseMode.HTML)
+        prefix = self._manager_reply_prefix
+        session_mode = self._manager_reply_style == "session_header"
+
+        reply_to = None
+        if session_mode:
+            reply_to = await self._get_or_create_manager_header(client_chat_id, chat_id)
+            caption = self._md_to_html(text) if text else None
         else:
-            await self.application.bot.send_message(chat_id=client_chat_id, text=self._md_to_html(text or "Сообщение"), reply_to_message_id=header.message_id, parse_mode=ParseMode.HTML)
+            combined = f"{prefix}\n\n{text}" if text else prefix
+            caption = self._md_to_html(combined)
+
+        kwargs = {"reply_to_message_id": reply_to} if reply_to else {}
+
+        if kind == "text":
+            await self.application.bot.send_message(chat_id=client_chat_id, text=caption or self._md_to_html(prefix), parse_mode=ParseMode.HTML, **kwargs)
+        elif kind == "photo":
+            await self.application.bot.send_photo(chat_id=client_chat_id, photo=file_id, caption=caption, parse_mode=ParseMode.HTML, **kwargs)
+        elif kind == "video":
+            await self.application.bot.send_video(chat_id=client_chat_id, video=file_id, caption=caption, parse_mode=ParseMode.HTML, **kwargs)
+        elif kind == "audio":
+            await self.application.bot.send_audio(chat_id=client_chat_id, audio=file_id, caption=caption, parse_mode=ParseMode.HTML, **kwargs)
+        elif kind == "voice":
+            await self.application.bot.send_voice(chat_id=client_chat_id, voice=file_id, caption=caption, parse_mode=ParseMode.HTML, **kwargs)
+        elif kind == "document":
+            await self.application.bot.send_document(chat_id=client_chat_id, document=file_id, caption=caption, parse_mode=ParseMode.HTML, **kwargs)
+        elif kind == "video_note":
+            # video_note не поддерживает caption — в combined-режиме шлём префикс отдельным сообщением
+            if not session_mode:
+                await self.application.bot.send_message(chat_id=client_chat_id, text=self._md_to_html(f"{prefix}\n\n{text}" if text else prefix), parse_mode=ParseMode.HTML)
+            await self.application.bot.send_video_note(chat_id=client_chat_id, video_note=file_id, **kwargs)
+        elif kind == "sticker":
+            # sticker тоже не поддерживает caption
+            if not session_mode:
+                await self.application.bot.send_message(chat_id=client_chat_id, text=self._md_to_html(prefix), parse_mode=ParseMode.HTML)
+            await self.application.bot.send_sticker(chat_id=client_chat_id, sticker=file_id, **kwargs)
+        elif kind == "animation":
+            await self.application.bot.send_animation(chat_id=client_chat_id, animation=file_id, caption=caption, parse_mode=ParseMode.HTML, **kwargs)
+        else:
+            await self.application.bot.send_message(chat_id=client_chat_id, text=caption or self._md_to_html(text or "Сообщение"), parse_mode=ParseMode.HTML, **kwargs)
 
     def _status_emoji(self, status: str, role_hint: Optional[str] = None) -> str:
         if role_hint and role_hint in self._emoji_by_role:
@@ -2421,7 +2510,8 @@ class SupportBot:
                 await update.message.reply_text("❌ Не найден связанный клиент для этого топика.")
                 return
             try:
-                await self._send_to_client(client_chat_id, info)
+                await self._send_to_client(client_chat_id, info, chat_id)
+                await self._ensure_manager_assigned(chat_id, user_id)
                 await self._save_message_to_db(chat_id, user_id, info, "manager")
                 await self._edit_group_topic_status(await self.db.get_chat_by_id(chat_id), role_hint="manager")
             except Exception as e:
@@ -2435,7 +2525,8 @@ class SupportBot:
                 client_chat_id = route["client_chat_id"]
                 chat_id = route["chat_id"]
                 try:
-                    await self._send_to_client(client_chat_id, info)
+                    await self._send_to_client(client_chat_id, info, chat_id)
+                    await self._ensure_manager_assigned(chat_id, user_id)
                     await self._save_message_to_db(chat_id, user_id, info, "manager")
                     await update.message.reply_text(f"✅ Сообщение отправлено пользователю (Чат #{chat_id})")
                 except Exception as e:
@@ -2454,7 +2545,8 @@ class SupportBot:
                 manager_chat = await self.db.get_chat_by_id(active_chat_id)
             if manager_chat:
                 try:
-                    await self._send_to_client(manager_chat.user_id, info)
+                    await self._send_to_client(manager_chat.user_id, info, manager_chat.id)
+                    await self._ensure_manager_assigned(manager_chat.id, user_id)
                     await self._save_message_to_db(manager_chat.id, user_id, info, "manager")
                     await update.message.reply_text(f"✅ Сообщение отправлено пользователю (Чат #{manager_chat.id})")
                 except Exception as e:
