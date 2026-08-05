@@ -85,6 +85,12 @@ class SupportBot:
         self._manager_reply_style = "combined"
         # Fallback-хранилище message_id заголовка сессии, если Redis недоступен
         self._manager_header_mem = {}
+        # Подтверждение клиенту "✅ Ваше сообщение отправлено..." при каждом
+        # сообщении, пока чат ждёт менеджера — можно отключить, если раздражает
+        self._client_ack_enabled = True
+        # message_id последнего такого подтверждения на чат — чтобы можно было
+        # удалить его, когда придёт реальный ответ менеджера (best-effort)
+        self._waiting_ack_mem = {}
         # AI-обработка медиа и отчеты
         self._ai_voice_enabled = True             # расшифровка голосовых через Whisper
         self._ai_vision_enabled = True            # разбор фото/скриншотов vision-моделью
@@ -129,6 +135,7 @@ class SupportBot:
             "weekly_report_enabled",
             "manager_reply_prefix",
             "manager_reply_style",
+            "client_ack_enabled",
         ]
         rows = await SystemConfig.filter(key__in=keys).all()
         values = {r.key: (r.value or "") for r in rows}
@@ -203,6 +210,7 @@ class SupportBot:
         style_raw = (values.get("manager_reply_style") or "").strip()
         if style_raw in ("combined", "session_header"):
             self._manager_reply_style = style_raw
+        self._client_ack_enabled = _as_bool("client_ack_enabled", True)
 
         if not self._group_mode_enabled:
             self._group_id = None
@@ -2167,9 +2175,43 @@ class SupportBot:
         await ChatModel.filter(id=chat_id).update(manager_id=manager_id)
         self._set_manager_active_chat(manager_id, chat_id)
 
+    def _store_waiting_ack(self, chat_id: int, message_id: int):
+        """Запомнить message_id подтверждения "✅ Ваше сообщение отправлено..." —
+        чтобы удалить его, когда придёт реальный ответ менеджера"""
+        if self.redis:
+            try:
+                self.redis.set(f"waiting_ack:{chat_id}", str(message_id), ex=60 * 60 * 24)
+                return
+            except Exception:
+                pass
+        self._waiting_ack_mem[chat_id] = message_id
+
+    async def _delete_waiting_ack(self, client_chat_id: int, chat_id: int):
+        """Best-effort удаление подтверждения о ожидании ответа, когда менеджер
+        реально ответил — если не получится (сообщение старое/уже удалено/нет
+        прав), просто молча пропускаем, ничего страшного."""
+        message_id = None
+        if self.redis:
+            try:
+                raw = self.redis.get(f"waiting_ack:{chat_id}")
+                if raw:
+                    message_id = int(raw)
+                    self.redis.delete(f"waiting_ack:{chat_id}")
+            except Exception:
+                pass
+        else:
+            message_id = self._waiting_ack_mem.pop(chat_id, None)
+        if not message_id:
+            return
+        try:
+            await self.application.bot.delete_message(chat_id=client_chat_id, message_id=message_id)
+        except Exception:
+            pass
+
     async def _send_to_client(self, client_chat_id: int, info: dict, chat_id: int):
         """Отправить сообщение менеджера клиенту с учётом выбранного стиля префикса
         (combined — префикс в каждом сообщении, session_header — один раз за сессию)"""
+        await self._delete_waiting_ack(client_chat_id, chat_id)
         kind = info["kind"]
         text = info.get("text") or ""
         file_id = info.get("file_id")
@@ -2432,17 +2474,21 @@ class SupportBot:
     async def _forward_to_manager(self, chat, user, info: dict, update: Update):
         if self._group_id:
             await self._duplicate_to_group(chat, user, info, update, role_hint="client")
-            try:
-                await update.message.reply_text("✅ Ваше сообщение отправлено в поддержку. Ожидайте ответа.")
-            except Exception:
-                pass
+            if self._client_ack_enabled:
+                try:
+                    ack = await update.message.reply_text("✅ Ваше сообщение отправлено в поддержку. Ожидайте ответа.")
+                    self._store_waiting_ack(chat.id, ack.message_id)
+                except Exception:
+                    pass
             return True
         manager_id = chat.manager_id
         if not manager_id:
-            try:
-                await update.message.reply_text("✅ Ваше сообщение сохранено. Менеджер скоро ответит.")
-            except Exception:
-                pass
+            if self._client_ack_enabled:
+                try:
+                    ack = await update.message.reply_text("✅ Ваше сообщение сохранено. Менеджер скоро ответит.")
+                    self._store_waiting_ack(chat.id, ack.message_id)
+                except Exception:
+                    pass
             return True
         signature = f"👤 Клиент: @{user.username}" if user.username else f"👤 Клиент: {user.first_name or 'Клиент'}"
         signature += f" 🆔 ID: {chat.id}"
@@ -2451,10 +2497,12 @@ class SupportBot:
         self._store_reply_map(manager_id, copied.message_id, chat.user_id, info["message_id"], chat.id)
         self._store_reply_map(manager_id, header.message_id, chat.user_id, info["message_id"], chat.id)
         self._set_manager_active_chat(manager_id, chat.id)
-        try:
-            await update.message.reply_text("✅ Ваше сообщение отправлено менеджеру. Ожидайте ответа.")
-        except Exception:
-            pass
+        if self._client_ack_enabled:
+            try:
+                ack = await update.message.reply_text("✅ Ваше сообщение отправлено менеджеру. Ожидайте ответа.")
+                self._store_waiting_ack(chat.id, ack.message_id)
+            except Exception:
+                pass
         return True
 
     async def handle_any_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
