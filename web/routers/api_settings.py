@@ -300,6 +300,7 @@ async def get_bot_settings(user: AdminUser = Depends(get_current_user)):
         "groq_models",
         "manager_reply_prefix",
         "manager_reply_style",
+        "client_ack_enabled",
     ]
     rows = await SystemConfig.filter(key__in=keys).all()
     values = {r.key: r.value for r in rows}
@@ -345,6 +346,7 @@ async def get_bot_settings(user: AdminUser = Depends(get_current_user)):
         "groq_models": cfg.groq_models or "",
         "manager_reply_prefix": "👨‍💼 Менеджер поддержки",
         "manager_reply_style": "combined",
+        "client_ack_enabled": True,
     }
     effective = {}
     for k in defaults.keys():
@@ -353,7 +355,7 @@ async def get_bot_settings(user: AdminUser = Depends(get_current_user)):
             raw = None
         if k == "manager_reply_style" and raw not in ("combined", "session_header"):
             raw = None
-        if k == "ai_support_enabled":
+        if k in ("ai_support_enabled", "client_ack_enabled"):
             if raw is None:
                 effective[k] = bool(defaults.get(k))
             else:
@@ -407,6 +409,7 @@ async def put_bot_settings(request: Request, user: AdminUser = Depends(get_curre
         "groq_models": "AI: модели Groq",
         "manager_reply_prefix": "Бот: текст перед сообщением менеджера",
         "manager_reply_style": "Бот: режим показа текста менеджера",
+        "client_ack_enabled": "Бот: подтверждение клиенту о получении сообщения",
     }
     for k, desc in allowed.items():
         if k not in body:
@@ -417,7 +420,7 @@ async def put_bot_settings(request: Request, user: AdminUser = Depends(get_curre
         if v is None or (k in ["ai_system_prompt", "bot_welcome_message", "manager_reply_prefix"] and str(v).strip() == ""):
             await SystemConfig.filter(key=k).delete()
         else:
-            if k == "ai_support_enabled":
+            if k in ("ai_support_enabled", "client_ack_enabled"):
                 await SystemConfig.update_or_create(key=k, defaults={"value": "true" if bool(v) else "false", "description": desc})
             else:
                 await SystemConfig.update_or_create(key=k, defaults={"value": str(v), "description": desc})

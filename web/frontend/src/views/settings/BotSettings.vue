@@ -83,6 +83,16 @@
               </label>
             </div>
           </div>
+
+          <div class="field full-width">
+            <div style="display:flex; align-items:center; gap:10px; padding: 12px; border:1px solid var(--app-border); border-radius: var(--app-radius);">
+              <Checkbox v-model="form.client_ack_enabled" :binary="true" inputId="client_ack" />
+              <label for="client_ack" style="cursor: pointer;">
+                <div style="font-weight:600;">Подтверждение клиенту «✅ Ваше сообщение отправлено...»</div>
+                <div class="muted" style="font-size:12px;">Отправляется при каждом сообщении, пока чат ждёт менеджера. Если раздражает — выключите; при ответе менеджера подтверждение по возможности удаляется автоматически</div>
+              </label>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -149,7 +159,8 @@ const form = ref({
   ai_system_prompt: '',
   ai_support_enabled: true,
   manager_reply_prefix: '👨‍💼 Менеджер поддержки',
-  manager_reply_style: 'combined'
+  manager_reply_style: 'combined',
+  client_ack_enabled: true
 })
 
 const welcomeHelp = 'Переменные: {first_name}, {username}, {project_name}, {project_bot_link}'
