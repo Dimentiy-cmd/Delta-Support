@@ -60,9 +60,19 @@ async def list_chats(
             "assigned_admin_id": c.assigned_admin_id,
             "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None,
             "updated_at": c.updated_at.isoformat(),
+            "waiting_since": c.waiting_since.isoformat() if c.waiting_since else None,
+            "unread_count": await _unread_count(c),
         }
         for c in chats
     ]
+
+
+async def _unread_count(chat: Chat) -> int:
+    """Сколько сообщений клиента пришло с момента, когда чат последний раз
+    открывали в панели. Ответы AI сюда не входят — не хочется, чтобы
+    менеджер видел "непрочитанное", если клиенту уже ответил бот."""
+    since = chat.last_viewed_at or chat.created_at
+    return await Message.filter(chat_id=chat.id, message_type="user", created_at__gt=since).count()
 
 @router.get("/counts")
 async def chat_counts(user: AdminUser = Depends(get_current_user)):
@@ -148,6 +158,8 @@ async def chat_details(chat_id: int, user: AdminUser = Depends(get_current_user)
         "assigned_admin_id": chat.assigned_admin_id,
         "last_message_at": chat.last_message_at.isoformat() if chat.last_message_at else None,
         "updated_at": chat.updated_at.isoformat(),
+        "waiting_since": chat.waiting_since.isoformat() if chat.waiting_since else None,
+        "unread_count": await _unread_count(chat),
         "topic_id": chat.topic_id,
     }
 
@@ -169,9 +181,22 @@ async def chat_profile(chat_id: int, user: AdminUser = Depends(get_current_user)
         "last_message_at": chat.last_message_at.isoformat() if chat.last_message_at else None,
         "updated_at": chat.updated_at.isoformat(),
         "created_at": chat.created_at.isoformat() if getattr(chat, "created_at", None) else None,
+        "waiting_since": chat.waiting_since.isoformat() if chat.waiting_since else None,
+        "unread_count": await _unread_count(chat),
         "topic_id": chat.topic_id,
         "avatar_url": f"/api/chats/{chat_id}/avatar",
     }
+
+
+@router.post("/{chat_id}/read")
+async def mark_chat_read(chat_id: int, user: AdminUser = Depends(get_current_user)):
+    """Отмечает чат просмотренным менеджером — сбрасывает счётчик непрочитанных.
+    Панель дёргает это при открытии чата."""
+    chat = await Chat.get_or_none(id=chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    await Chat.filter(id=chat_id).update(last_viewed_at=datetime.now(timezone.utc))
+    return {"ok": True}
 
 
 @router.get("/{chat_id}/account")
@@ -304,7 +329,7 @@ async def send_api_message(request: Request, chat_id: int, user: AdminUser = Dep
     except Exception:
         msg = await Message.create(chat_id=chat_id, user_id=sender_uid, message_type="manager", content=text)
     try:
-        await Chat.filter(id=chat_id).update(last_message_at=msg.created_at)
+        await Chat.filter(id=chat_id).update(last_message_at=msg.created_at, updated_at=msg.created_at)
     except Exception:
         pass
     # отправка через бота
@@ -385,7 +410,7 @@ async def send_api_media(
         admin_user_id=user.id,
     )
     try:
-        await Chat.filter(id=chat_id).update(last_message_at=msg.created_at)
+        await Chat.filter(id=chat_id).update(last_message_at=msg.created_at, updated_at=msg.created_at)
     except Exception:
         pass
     bot: SupportBot = request.app.state.bot
@@ -597,7 +622,7 @@ async def join_chat(request: Request, chat_id: int, user: AdminUser = Depends(ge
     except Exception:
         sysmsg = await Message.create(chat_id=chat_id, user_id=chat.user_id, message_type="manager", content="Менеджер подключился")
     try:
-        await Chat.filter(id=chat_id).update(last_message_at=sysmsg.created_at)
+        await Chat.filter(id=chat_id).update(last_message_at=sysmsg.created_at, updated_at=sysmsg.created_at)
     except Exception:
         pass
     _notify_client_background(bot, chat.user_id, "👨‍💼 Менеджер подключился к вашему чату. Можете писать сообщение.")
@@ -640,7 +665,7 @@ async def close_chat(request: Request, chat_id: int, user: AdminUser = Depends(g
     except Exception:
         sysmsg = await Message.create(chat_id=chat_id, user_id=chat.user_id, message_type="manager", content="Чат закрыт. AI активирован")
     try:
-        await Chat.filter(id=chat_id).update(last_message_at=sysmsg.created_at)
+        await Chat.filter(id=chat_id).update(last_message_at=sysmsg.created_at, updated_at=sysmsg.created_at)
     except Exception:
         pass
     bot._clear_manager_header(chat_id)
@@ -681,7 +706,7 @@ async def back_to_ai(request: Request, chat_id: int, user: AdminUser = Depends(g
     except Exception:
         sysmsg = await Message.create(chat_id=chat_id, user_id=chat.user_id, message_type="manager", content="Менеджер завершил сессию. AI активирован")
     try:
-        await Chat.filter(id=chat_id).update(last_message_at=sysmsg.created_at)
+        await Chat.filter(id=chat_id).update(last_message_at=sysmsg.created_at, updated_at=sysmsg.created_at)
     except Exception:
         pass
     bot._clear_manager_header(chat_id)

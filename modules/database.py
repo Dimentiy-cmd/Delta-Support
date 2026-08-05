@@ -34,7 +34,9 @@ class Chat(Model):
     # SLA: с какого момента чат ждет менеджера
     waiting_since = fields.DatetimeField(null=True)
     sla_notified = fields.BooleanField(default=False)
-    
+    # Когда чат последний раз открывали в панели — для счётчика непрочитанных
+    last_viewed_at = fields.DatetimeField(null=True)
+
     # Reverse relations
     messages: fields.ReverseRelation["Message"]
     notifications: fields.ReverseRelation["ManagerNotification"]
@@ -195,6 +197,7 @@ class Database:
                     "reminder_sent_at TEXT",
                     "waiting_since TEXT",
                     "sla_notified INTEGER DEFAULT 0",
+                    "last_viewed_at TEXT",
                 ]:
                     await safe_add_column("chats", column)
                 
@@ -263,6 +266,7 @@ class Database:
                     ("chats", "reminder_sent_at TIMESTAMPTZ"),
                     ("chats", "waiting_since TIMESTAMPTZ"),
                     ("chats", "sla_notified BOOLEAN DEFAULT FALSE"),
+                    ("chats", "last_viewed_at TIMESTAMPTZ"),
                 ]:
                     try:
                         await conn.execute_script(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column}")
@@ -312,8 +316,10 @@ class Database:
             source=source,
             text=content
         )
-        # Обновляем last_message_at; ответ клиента сбрасывает таймер напоминания
-        chat_update = {"last_message_at": message.created_at}
+        # Обновляем last_message_at; ответ клиента сбрасывает таймер напоминания.
+        # updated_at обновляем явно — bulk .update() не триггерит Tortoise auto_now,
+        # а именно по updated_at список чатов в панели сортируется "новые сверху"
+        chat_update = {"last_message_at": message.created_at, "updated_at": message.created_at}
         if message_type == "user":
             chat_update["reminder_sent_at"] = None
         await Chat.filter(id=chat_id).update(**chat_update)
