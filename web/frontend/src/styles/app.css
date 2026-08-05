@@ -345,6 +345,32 @@ body.dark .p-dialog .p-dialog-footer {
   height: 30px;
 }
 
+.count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.28);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.count-badge.pulse {
+  background: #f59e0b;
+  color: #fff;
+  animation: badge-pulse 1.6s infinite;
+}
+
+@keyframes badge-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(245, 158, 11, 0); }
+}
+
 .chat-list-search .p-input-icon-left {
   position: relative;
   display: block;
@@ -484,8 +510,9 @@ body.dark .sheet-overlay {
 
 .sheet {
   width: min(640px, 100%);
+  max-height: 85vh;
   border-radius: var(--app-radius);
-  overflow: hidden;
+  overflow-y: auto;
   background: var(--app-panel-solid);
   border: 1px solid var(--app-border);
   box-shadow: var(--app-shadow);
@@ -618,14 +645,144 @@ body.dark .bubble {
   padding: calc(var(--app-padding) * 0.5) 0;
 }
 
-@media (max-width: 980px) {
+.mobile-tabbar {
+  display: none;
+}
+
+@media (max-width: 768px) {
   .app-shell {
     grid-template-columns: 1fr;
   }
+
   .sidebar {
     display: none;
   }
+
+  .mobile-tabbar {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    justify-content: space-around;
+    align-items: center;
+    padding: 6px calc(var(--app-padding) * 0.5) calc(6px + env(safe-area-inset-bottom, 0px));
+    background: var(--app-panel-solid);
+    border-top: 1px solid var(--app-border);
+    box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.10);
+  }
+
+  .mobile-tab {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    color: var(--app-muted);
+    text-decoration: none;
+    font-size: 10px;
+    padding: 4px 10px;
+    border-radius: 10px;
+  }
+
+  .mobile-tab i {
+    font-size: 18px;
+  }
+
+  .mobile-tab.router-link-active {
+    color: var(--app-brand);
+  }
+
+  .content {
+    padding: calc(var(--app-padding) * 0.5) calc(var(--app-padding) * 0.5) calc(64px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .topbar {
+    margin: calc(var(--app-gap) * 0.5) calc(var(--app-gap) * 0.5) 0;
+    padding: 0 calc(var(--app-padding) * 0.6);
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* Чаты: на мобильном показываем список ИЛИ диалог, не обе колонки сразу */
   .chat-layout {
     grid-template-columns: 1fr;
+    gap: 0;
   }
+
+  .chat-layout .chat-list {
+    display: grid;
+  }
+
+  .chat-layout.has-active .chat-list {
+    display: none;
+  }
+
+  .chat-layout .chat-room {
+    display: none;
+  }
+
+  .chat-layout.has-active .chat-room {
+    display: grid;
+  }
+
+  .mobile-back-btn {
+    display: inline-flex !important;
+  }
+
+  .chat-room-header {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* Композер: поле ввода на всю ширину, кнопки — отдельным рядом под ним */
+  .composer {
+    flex-wrap: wrap;
+    padding: calc(var(--app-padding) * 0.5);
+    gap: calc(var(--app-gap) * 0.35);
+  }
+
+  .composer .composer-grow {
+    order: -1;
+    flex: 1 0 100%;
+    width: 100%;
+  }
+
+  .composer > .p-button:last-child {
+    margin-left: auto;
+  }
+
+  .bubble {
+    max-width: 92%;
+  }
+
+  .media-img {
+    max-width: 100%;
+  }
+
+  .media-video {
+    max-width: 100%;
+  }
+
+  /* Настройки: боковой список пунктов превращается в горизонтальную ленту сверху */
+  .settings-layout {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: auto 1fr;
+  }
+
+  .settings-nav {
+    display: flex;
+    overflow-x: auto;
+    border-right: none !important;
+    border-bottom: 1px solid var(--app-border);
+  }
+
+  .settings-nav .s-item {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+}
+
+.mobile-back-btn {
+  display: none;
 }

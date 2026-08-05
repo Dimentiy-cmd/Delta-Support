@@ -61,11 +61,37 @@
       </div>
     </div>
 
+    <!-- Топ слов без AI -->
+    <div class="panel card" style="padding: 16px; margin-top: 16px;">
+      <div style="font-weight: 700; margin-bottom: 4px;">🏷️ Часто встречающиеся слова в обращениях</div>
+      <div class="muted" style="font-size: 12px; margin-bottom: 10px;">Быстрый срез без AI — по словам из сообщений клиентов за выбранный период</div>
+      <div v-if="data?.top_keywords?.length" style="display:flex; flex-wrap:wrap; gap:8px;">
+        <span v-for="k in data.top_keywords" :key="k.word" class="keyword-chip">
+          {{ k.word }} <b>{{ k.count }}</b>
+        </span>
+      </div>
+      <div v-else class="muted" style="font-size: 13px;">Недостаточно данных за период</div>
+    </div>
+
+    <!-- Нагрузка по часам -->
+    <div class="panel card" style="padding: 16px; margin-top: 16px;">
+      <div style="font-weight: 700; margin-bottom: 12px;">🕐 Нагрузка по часам суток (UTC)</div>
+      <div v-if="data?.hourly_load" class="hour-chart">
+        <div v-for="(v, h) in data.hourly_load" :key="h" class="hour-col" :title="`${h}:00 — ${v} сообщений`">
+          <div class="hour-bar" :style="{ height: hourBarH(v) }"></div>
+          <div class="hour-x">{{ h }}</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Темы недели -->
     <div class="panel card" style="padding: 16px; margin-top: 16px;">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-        <div style="font-weight: 700;">🔥 Топ тем обращений (за 7 дней)</div>
-        <Button label="Определить темы (AI)" icon="pi pi-sparkles" size="small" :loading="topicsLoading" @click="loadTopics" />
+        <div>
+          <div style="font-weight: 700;">🔥 Топ тем обращений (AI, за 7 дней)</div>
+          <div v-if="topicsGeneratedAt" class="muted" style="font-size:11px;">Обновлено: {{ new Date(topicsGeneratedAt).toLocaleString() }}</div>
+        </div>
+        <Button label="Обновить темы (AI)" icon="pi pi-sparkles" size="small" :loading="topicsLoading" @click="loadTopics" />
       </div>
       <pre v-if="topics" class="topics-pre">{{ topics }}</pre>
       <div v-else-if="topicsError" style="color:#ef4444; font-size:13px; margin-top:10px;">{{ topicsError }}</div>
@@ -93,6 +119,8 @@ type Overview = {
   }
   now: { active: number; waiting_manager: number; closed_total: number }
   by_day: { date: string; chats: number; user: number; ai: number; manager: number }[]
+  top_keywords?: { word: string; count: number }[]
+  hourly_load?: number[]
 }
 
 const data = ref<Overview | null>(null)
@@ -100,6 +128,7 @@ const days = ref(14)
 const topics = ref('')
 const topicsError = ref('')
 const topicsLoading = ref(false)
+const topicsGeneratedAt = ref<string | null>(null)
 
 const aiShare = computed(() => {
   const v = data.value?.totals.ai_solved_share
@@ -121,9 +150,31 @@ function barH(v: number) {
   return v > 0 ? `${Math.max(h, 3)}px` : '0px'
 }
 
+const maxHour = computed(() => {
+  const arr = data.value?.hourly_load || []
+  return Math.max(1, ...arr)
+})
+
+function hourBarH(v: number) {
+  const h = Math.round((v / maxHour.value) * 90)
+  return v > 0 ? `${Math.max(h, 3)}px` : '0px'
+}
+
 async function load() {
   const res = await fetch(`/api/stats/overview?days=${days.value}`, { credentials: 'include' })
   if (res.ok) data.value = await res.json()
+}
+
+async function loadCachedTopics() {
+  try {
+    const res = await fetch('/api/stats/topics', { credentials: 'include' })
+    const d = await res.json()
+    if (d.ok) {
+      topics.value = d.topics
+      topicsGeneratedAt.value = d.generated_at || null
+    }
+  } catch {
+  }
 }
 
 async function loadTopics() {
@@ -132,8 +183,12 @@ async function loadTopics() {
   try {
     const res = await fetch('/api/stats/topics', { method: 'POST', credentials: 'include' })
     const d = await res.json()
-    if (d.ok) topics.value = d.topics
-    else topicsError.value = d.error || 'Ошибка'
+    if (d.ok) {
+      topics.value = d.topics
+      topicsGeneratedAt.value = d.generated_at || null
+    } else {
+      topicsError.value = d.error || 'Ошибка'
+    }
   } catch (e: any) {
     topicsError.value = e?.message || 'Ошибка'
   } finally {
@@ -141,7 +196,10 @@ async function loadTopics() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadCachedTopics()
+})
 </script>
 
 <style scoped>
@@ -202,6 +260,51 @@ onMounted(load)
   margin-right: 4px;
   vertical-align: middle;
 }
+.keyword-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--app-border);
+  background: rgba(148, 163, 184, 0.08);
+  font-size: 13px;
+}
+
+.keyword-chip b {
+  color: var(--app-brand);
+  font-weight: 800;
+}
+
+.hour-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  min-height: 110px;
+  overflow-x: auto;
+}
+
+.hour-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 16px;
+}
+
+.hour-bar {
+  width: 100%;
+  max-width: 18px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--app-brand) 70%, #38bdf8);
+}
+
+.hour-x {
+  font-size: 9px;
+  opacity: 0.6;
+}
+
 .topics-pre {
   margin-top: 12px;
   white-space: pre-wrap;

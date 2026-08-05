@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-layout">
+  <div class="chat-layout" :class="{ 'has-active': !!activeChat }">
     <div class="panel card chat-list">
       <div class="chat-list-header">
         <div style="display:flex; flex-direction:column; gap: calc(var(--app-gap)*0.25);">
@@ -14,13 +14,20 @@
       <div class="chat-list-search">
         <span class="p-input-icon-left" style="width: 100%;">
           <i class="pi pi-search"></i>
-          <InputText v-model="query" style="width: 100%;" placeholder="Поиск по имени/username..." />
+          <InputText v-model="query" style="width: 100%;" placeholder="Имя, username или Telegram ID..." />
         </span>
         <div class="chat-list-filters">
-          <Button size="small" :severity="status==='active' ? 'success' : undefined" :outlined="status!=='active'" label="AI" @click="setStatus('active')" />
-          <Button size="small" :severity="status==='waiting_manager' ? 'warning' : undefined" :outlined="status!=='waiting_manager'" label="Ожидают" @click="setStatus('waiting_manager')" />
+          <Button size="small" :severity="status==='active' ? 'success' : undefined" :outlined="status!=='active'" @click="setStatus('active')">
+            AI<span v-if="counts.active" class="count-badge">{{ counts.active }}</span>
+          </Button>
+          <Button size="small" :severity="status==='waiting_manager' ? 'warning' : undefined" :outlined="status!=='waiting_manager'" @click="setStatus('waiting_manager')">
+            Ожидают<span v-if="counts.waiting_manager" class="count-badge" :class="{ pulse: counts.waiting_manager > 0 }">{{ counts.waiting_manager }}</span>
+          </Button>
           <Button size="small" :severity="status==='closed' ? 'secondary' : undefined" :outlined="status!=='closed'" label="Закрыт" @click="setStatus('closed')" />
           <Button size="small" :outlined="status!=='all'" label="Все" @click="setStatus('all')" />
+          <Button size="small" :severity="mineOnly ? 'info' : undefined" :outlined="!mineOnly" @click="mineOnly = !mineOnly">
+            Мои<span v-if="counts.mine" class="count-badge">{{ counts.mine }}</span>
+          </Button>
         </div>
       </div>
 
@@ -51,6 +58,7 @@
     <div class="panel card chat-room">
     <div class="chat-room-header">
       <div style="display:flex; align-items:center; gap: calc(var(--app-gap) * 0.75); min-width: 0;">
+        <Button class="mobile-back-btn" icon="pi pi-arrow-left" text rounded @click="backToList" />
         <div v-if="activeChat" class="profile-trigger" @click="profileOpen = true">
           <img v-if="profile && !avatarFailed" :src="profile.avatar_url" @error="avatarFailed = true" />
           <Avatar v-else :label="avatarLabel(activeChat)" shape="circle" />
@@ -74,6 +82,14 @@
             :label="connectLabel"
             :severity="activeChat.status === 'waiting_manager' ? 'secondary' : 'success'"
             @click="toggleConnect"
+          />
+          <Button
+            size="small"
+            icon="pi pi-book"
+            outlined
+            title="Сохранить решение в базу знаний"
+            :loading="kbLearning"
+            @click="learnFromChat"
           />
           <Button
             v-if="auth.isAdmin"
@@ -126,6 +142,7 @@
         <input ref="fileInput" type="file" style="display:none" @change="onFileChange" />
         <Button icon="pi pi-paperclip" text rounded :disabled="!activeId" @click="pickFile" />
         <Button :icon="recording ? 'pi pi-stop' : 'pi pi-microphone'" text rounded :disabled="!activeId" @click="toggleRecord" />
+        <Button icon="pi pi-sparkles" text rounded :disabled="!activeId" :loading="aiSuggesting" title="AI предложит ответ" @click="suggestAiReply" />
         <div class="composer-grow">
           <Textarea
             v-model="draft"
@@ -144,6 +161,7 @@
             <audio :src="voicePreviewUrl" controls style="width: 100%;" />
           </div>
           <div v-if="micError" style="color:#ef4444; font-size: 12px; margin-top: 8px;">{{ micError }}</div>
+          <div v-if="aiSuggestError" style="color:#ef4444; font-size: 12px; margin-top: 8px;">{{ aiSuggestError }}</div>
         </div>
         <Button icon="pi pi-send" label="Отправить" :disabled="!activeId || (!draft.trim() && !attachedFile)" @click="send" />
       </div>
@@ -179,12 +197,29 @@
             <div class="sheet-row"><span class="muted">Обновлён</span><span>{{ pretty(activeChat.updated_at) }}</span></div>
           </div>
         </div>
+
+        <AccountPanel :chat-id="activeChat.id" />
       </div>
     </div>
 
     <div v-if="lightboxUrl" class="lightbox-overlay" @click="lightboxUrl = null">
       <img class="lightbox-img" :src="lightboxUrl" @click.stop />
     </div>
+
+    <Dialog v-model:visible="kbDialogOpen" modal header="Статья для базы знаний" :style="{ width: '620px' }">
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <div class="muted" style="font-size:12px;">
+          AI составил черновик по этому диалогу — проверьте и подправьте перед сохранением.
+        </div>
+        <InputText v-model="kbTitle" placeholder="Заголовок статьи" />
+        <Textarea v-model="kbContent" autoResize rows="10" placeholder="Содержание статьи" />
+        <div v-if="kbError" style="color:#ef4444; font-size:13px;">{{ kbError }}</div>
+        <div style="display:flex; gap:8px; justify-content:flex-end;">
+          <Button label="Отмена" text @click="kbDialogOpen = false" />
+          <Button label="Сохранить в базу знаний" icon="pi pi-check" :loading="kbSaving" @click="saveKbDraft" />
+        </div>
+      </div>
+    </Dialog>
   </div>
 </template>
 
@@ -196,7 +231,9 @@ import Button from 'primevue/button'
 import Textarea from 'primevue/textarea'
 import Avatar from 'primevue/avatar'
 import Tag from 'primevue/tag'
+import Dialog from 'primevue/dialog'
 import { useAuthStore } from '@/stores/auth'
+import AccountPanel from '@/components/AccountPanel.vue'
 
 type Chat = {
   id: number
@@ -232,6 +269,10 @@ const activeId = ref<number | null>(null)
 const activeChat = computed(() => chats.value.find((c) => c.id === activeId.value) || null)
 
 const status = ref<'active' | 'waiting_manager' | 'closed' | 'all'>('active')
+const mineOnly = ref(false)
+const counts = ref<{ active: number; waiting_manager: number; closed: number; all: number; mine: number }>({
+  active: 0, waiting_manager: 0, closed: 0, all: 0, mine: 0
+})
 const query = ref('')
 const draft = ref('')
 const attachedFile = ref<File | null>(null)
@@ -240,6 +281,14 @@ const profileOpen = ref(false)
 const profile = ref<any | null>(null)
 const avatarFailed = ref(false)
 const micError = ref('')
+const aiSuggesting = ref(false)
+const aiSuggestError = ref('')
+const kbLearning = ref(false)
+const kbDialogOpen = ref(false)
+const kbTitle = ref('')
+const kbContent = ref('')
+const kbError = ref('')
+const kbSaving = ref(false)
 const recording = ref(false)
 const voicePreviewUrl = ref<string | null>(null)
 const lightboxUrl = ref<string | null>(null)
@@ -367,11 +416,68 @@ function effectiveMediaType(m: Msg) {
   return m.media_type || inferMediaTypeFromText(m.text || '')
 }
 
+async function loadCounts() {
+  try {
+    const res = await fetch('/api/chats/counts', { credentials: 'include' })
+    if (res.ok) counts.value = await res.json()
+  } catch {
+  }
+}
+
+function chatMatchesFilter(c: Pick<Chat, 'status' | 'assigned_admin_id'>) {
+  if (mineOnly.value && c.assigned_admin_id !== auth.me?.id) return false
+  if (status.value === 'all') return true
+  return c.status === status.value
+}
+
+function sortChats() {
+  chats.value.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+}
+
+async function fetchChat(id: number): Promise<Chat | null> {
+  try {
+    const res = await fetch(`/api/chats/${id}`, { credentials: 'include' })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+function upsertChat(chat: Chat) {
+  const idx = chats.value.findIndex((c) => c.id === chat.id)
+  if (idx !== -1) {
+    chats.value[idx] = { ...chats.value[idx], ...chat }
+  } else {
+    chats.value.unshift(chat)
+  }
+  sortChats()
+}
+
+// Открытый сейчас чат никогда не убираем из списка, даже если он перестал
+// подходить под текущий фильтр — иначе менеджер теряет открытый диалог
+// (баг: "слетает активность" при смене статуса чата).
+function removeChatIfStale(chatId: number) {
+  if (chatId === activeId.value) return
+  const idx = chats.value.findIndex((c) => c.id === chatId)
+  if (idx !== -1 && !chatMatchesFilter(chats.value[idx])) {
+    chats.value.splice(idx, 1)
+  }
+}
+
+async function ensureActivePinned() {
+  if (!activeId.value) return
+  if (chats.value.some((c) => c.id === activeId.value)) return
+  const c = await fetchChat(activeId.value)
+  if (c) chats.value.unshift(c)
+}
+
 async function loadChats(force = false) {
   if (!auth.me) return
   const qs = new URLSearchParams()
   if (status.value !== 'all') qs.set('status', status.value)
   if (query.value.trim()) qs.set('q', query.value.trim())
+  if (mineOnly.value) qs.set('mine', 'true')
   const res = await fetch(`/api/chats?${qs.toString()}`, { credentials: 'include' })
   if (!res.ok) {
     if (res.status === 401) {
@@ -381,10 +487,8 @@ async function loadChats(force = false) {
   }
   const data = await res.json()
   chats.value = data
-  if (force && activeId.value) {
-    const exists = chats.value.some((c) => c.id === activeId.value)
-    if (!exists) activeId.value = null
-  }
+  await ensureActivePinned()
+  if (force) loadCounts()
 }
 
 async function loadMessages(chatId: number, opts?: { beforeId?: number; prepend?: boolean }) {
@@ -427,6 +531,7 @@ async function openChat(id: number) {
   profileOpen.value = false
   avatarFailed.value = false
   profile.value = null
+  await ensureActivePinned()
   try {
     const res = await fetch(`/api/chats/${id}/profile`, { credentials: 'include' })
     if (res.ok) {
@@ -560,6 +665,65 @@ async function toggleConnect() {
   }
 }
 
+async function learnFromChat() {
+  if (!activeId.value) return
+  kbLearning.value = true
+  kbError.value = ''
+  try {
+    const res = await fetch('/api/kb/learn-from-chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ chat_id: activeId.value })
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!data.ok) {
+      const errors: Record<string, string> = {
+        ai_disabled: 'AI выключен в настройках',
+        not_enough_data: 'В диалоге недостаточно сообщений для статьи',
+        ai_unavailable: 'AI не смог составить статью, попробуйте позже',
+        parse_failed: 'Не удалось разобрать ответ AI'
+      }
+      alert(errors[data.error] || 'Не удалось составить статью')
+      return
+    }
+    kbTitle.value = data.title
+    kbContent.value = data.content
+    kbError.value = ''
+    kbDialogOpen.value = true
+  } catch {
+    alert('Ошибка запроса')
+  } finally {
+    kbLearning.value = false
+  }
+}
+
+async function saveKbDraft() {
+  if (!kbTitle.value.trim() || !kbContent.value.trim()) {
+    kbError.value = 'Заголовок и содержание обязательны'
+    return
+  }
+  kbSaving.value = true
+  kbError.value = ''
+  try {
+    const res = await fetch('/api/kb', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ title: kbTitle.value.trim(), content: kbContent.value.trim() })
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ detail: 'Ошибка' }))
+      throw new Error(data.detail || 'Ошибка')
+    }
+    kbDialogOpen.value = false
+  } catch (e: any) {
+    kbError.value = e?.message || 'Ошибка сохранения'
+  } finally {
+    kbSaving.value = false
+  }
+}
+
 async function deleteChat() {
   if (!activeChat.value) return
   if (!confirm('Вы уверены, что хотите полностью удалить этот диалог и всю его историю? Это действие нельзя отменить.')) return
@@ -582,6 +746,10 @@ async function deleteChat() {
   }
 }
 
+function backToList() {
+  router.push('/chats')
+}
+
 function setStatus(s: typeof status.value) {
   status.value = s
 }
@@ -598,6 +766,30 @@ async function onScroll() {
     await loadMessages(activeId.value, { beforeId: first.id, prepend: true })
   } finally {
     loadingMore.value = false
+  }
+}
+
+async function suggestAiReply() {
+  if (!activeId.value) return
+  aiSuggestError.value = ''
+  aiSuggesting.value = true
+  try {
+    const res = await fetch(`/api/chats/${activeId.value}/ai-suggest`, { method: 'POST', credentials: 'include' })
+    const data = await res.json().catch(() => ({}))
+    if (!data.ok) {
+      const errors: Record<string, string> = {
+        ai_disabled: 'AI выключен в настройках',
+        no_messages: 'В чате пока нет сообщений',
+        ai_unavailable: 'AI не смог ответить, попробуйте позже'
+      }
+      aiSuggestError.value = errors[data.error] || 'Не удалось получить предложение'
+      return
+    }
+    draft.value = data.suggestion
+  } catch {
+    aiSuggestError.value = 'Ошибка запроса'
+  } finally {
+    aiSuggesting.value = false
   }
 }
 
@@ -705,16 +897,21 @@ function setupWS() {
       const chat = chats.value.find((c) => c.id === chatId)
       if (chat) {
         chat.last_message_at = m.created_at
+        chat.updated_at = m.created_at
+        sortChats()
       } else {
-        if (status.value === 'all' || status.value === 'waiting_manager') {
-          loadChats(true)
-        }
+        // Новый чат появился (или сейчас не в списке из-за фильтра) — подтягиваем точечно,
+        // без полной перезагрузки списка, чтобы не сбивать скролл и выделение
+        fetchChat(chatId).then((c) => {
+          if (c && (chatMatchesFilter(c) || activeId.value === chatId)) upsertChat(c)
+        })
       }
       if (activeId.value === chatId) {
         addMessage(m)
         await nextTick()
         scrollBottom()
       }
+      loadCounts()
     }
     if (msg.event === 'status_changed') {
       const chatId = msg.data.chat_id
@@ -723,17 +920,20 @@ function setupWS() {
       if (chat) {
         chat.status = nextStatus
         if ('assigned_admin_id' in msg.data) chat.assigned_admin_id = msg.data.assigned_admin_id
+        chat.updated_at = new Date().toISOString()
+        removeChatIfStale(chatId)
+        sortChats()
+      } else {
+        fetchChat(chatId).then((c) => {
+          if (c && (chatMatchesFilter(c) || activeId.value === chatId)) upsertChat(c)
+        })
       }
-      if (status.value !== 'all') {
-        loadChats(true)
-      } else if (!chat) {
-        loadChats(true)
-      }
+      loadCounts()
     }
   }
 }
 
-watch([query, status], () => {
+watch([query, status, mineOnly], () => {
   if (debounceTimer) window.clearTimeout(debounceTimer)
   debounceTimer = window.setTimeout(() => loadChats(), 250)
 })
@@ -745,6 +945,7 @@ onMounted(async () => {
     return
   }
   await loadChats()
+  loadCounts()
   const rid = typeof route.params.id === 'string' ? Number(route.params.id) : NaN
   if (rid && Number.isFinite(rid)) {
     await openChat(rid)
