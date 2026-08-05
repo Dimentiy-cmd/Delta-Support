@@ -47,7 +47,13 @@
               <span v-else class="muted">нет сообщений</span>
             </div>
           </div>
-          <Tag :severity="statusSeverity(item.status)" :value="statusName(item.status)" />
+          <div class="chat-item-meta">
+            <span v-if="item.status === 'waiting_manager' && item.waiting_since" class="waiting-badge" :class="{ urgent: waitingMinutes(item) >= 60 }">
+              ⏳ {{ waitingLabel(item) }}
+            </span>
+            <Tag :severity="statusSeverity(item.status)" :value="statusName(item.status)" />
+            <span v-if="item.unread_count" class="unread-badge">{{ item.unread_count }}</span>
+          </div>
         </div>
         <div v-if="chats.length === 0" class="scroll-hint" style="padding: 18px 0;">
           Нет чатов по выбранному фильтру
@@ -250,6 +256,8 @@ type Chat = {
   assigned_admin_id: number | null
   last_message_at: string | null
   updated_at: string
+  waiting_since?: string | null
+  unread_count?: number
 }
 
 type Msg = {
@@ -330,6 +338,24 @@ function pretty(iso: string | null) {
   if (!iso) return ''
   const d = new Date(iso)
   return d.toLocaleString()
+}
+
+// Тикает раз в 30с, чтобы бейдж "ждёт ответа" обновлялся сам без перезагрузки чата
+const nowTick = ref(Date.now())
+let tickTimer: number | null = null
+
+function waitingMinutes(c: Pick<Chat, 'waiting_since'>) {
+  if (!c.waiting_since) return 0
+  const start = new Date(c.waiting_since).getTime()
+  return Math.max(0, Math.floor((nowTick.value - start) / 60000))
+}
+
+function waitingLabel(c: Pick<Chat, 'waiting_since'>) {
+  const mins = waitingMinutes(c)
+  if (mins < 60) return `${mins}м`
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return `${h}ч ${m}м`
 }
 
 function titleForChat(c: Chat) {
@@ -550,6 +576,8 @@ async function openChat(id: number) {
   } catch {
   }
   await loadMessages(id)
+  if (activeChat.value) activeChat.value.unread_count = 0
+  fetch(`/api/chats/${id}/read`, { method: 'POST', credentials: 'include' }).catch(() => {})
 }
 
 function addMessage(m: Msg) {
@@ -984,6 +1012,7 @@ function setupWS() {
       } else if (m.source === 'user') {
         // Новое сообщение клиента в чате, который сейчас не открыт — звук привлекает внимание
         ui.playNotificationSound()
+        if (chat) chat.unread_count = (chat.unread_count || 0) + 1
       }
       loadCounts()
     }
@@ -1029,6 +1058,15 @@ onMounted(async () => {
     await openChat(rid)
   }
   setupWS()
+  tickTimer = window.setInterval(() => {
+    nowTick.value = Date.now()
+  }, 30000)
+})
+
+onUnmounted(() => {
+  if (tickTimer) window.clearInterval(tickTimer)
+  wsClosedByUs = true
+  ws?.close()
 })
 
 watch(
