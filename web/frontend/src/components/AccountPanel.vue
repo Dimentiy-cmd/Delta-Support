@@ -43,15 +43,13 @@
       </div>
       <div v-for="s in subs" :key="s.id" class="acc-card" :class="{ inactive: !s.is_currently_active }">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-          <span style="font-weight:600;">{{ s.tarif || 'Тариф' }}</span>
+          <span style="font-weight:600;">{{ s.tarif || s.username || 'Подписка' }}</span>
           <Tag :severity="s.is_currently_active ? 'success' : 'secondary'" :value="s.is_currently_active ? 'активна' : 'неактивна'" />
         </div>
-        <div class="muted" style="font-size:12px; margin-top:4px;">
-          до {{ shortDate(s.expire_at) }} · {{ traffic(s) }}
-          <span v-if="s.device_limit"> · устройств: {{ s.device_limit }}</span>
-          <span v-if="s.status_label"> · {{ statusLabel(s.status_label) }}</span>
+        <div v-if="subscriptionMeta(s)" class="muted" style="font-size:12px; margin-top:4px;">
+          {{ subscriptionMeta(s) }}
         </div>
-        <div class="acc-key-row">
+        <div v-if="s.username || s.short_id" class="acc-key-row">
           <code class="acc-key">{{ s.username || s.short_id }}</code>
           <Button icon="pi pi-copy" text rounded size="small" @click="copy(s.username || s.short_id)" />
         </div>
@@ -137,6 +135,16 @@ function traffic(s: any) {
   const limit = Number(s.traffic_limit_bytes || 0)
   const limitStr = limit ? (limit / 1024 ** 3).toFixed(1) + ' ГБ' : '∞'
   return `${used.toFixed(1)}/${limitStr}`
+}
+
+function subscriptionMeta(s: any) {
+  const parts: string[] = []
+  if (s.expire_at) parts.push(`до ${shortDate(s.expire_at)}`)
+  if (s.traffic_used_bytes !== undefined || s.traffic_limit_bytes !== undefined) parts.push(traffic(s))
+  if (s.device_limit) parts.push(`устройств: ${s.device_limit}`)
+  if (s.status_label) parts.push(statusLabel(s.status_label))
+  if (!parts.length && s.subscription_url) parts.push('доступна subscription URL')
+  return parts.join(' · ')
 }
 
 function statusLabel(status?: string | null) {

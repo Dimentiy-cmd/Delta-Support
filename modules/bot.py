@@ -1924,6 +1924,11 @@ class SupportBot:
             try:
                 await self.application.bot.delete_message(chat_id=self._group_id, message_id=msg.message_id)
                 logger.info(f"Deleted forum service message {msg.message_id}")
+            except BadRequest as e:
+                if "message can't be deleted" in str(e).lower():
+                    logger.debug(f"Forum service message {msg.message_id} cannot be deleted")
+                else:
+                    logger.warning(f"Failed to delete forum service message: {e}")
             except Exception as e:
                 logger.warning(f"Failed to delete forum service message: {e}")
 
@@ -2468,6 +2473,9 @@ class SupportBot:
             )) or getattr(msg, "new_chat_title", None):
                 try:
                     await self.application.bot.delete_message(chat_id=self._group_id, message_id=msg.message_id)
+                except BadRequest as e:
+                    if "message can't be deleted" not in str(e).lower():
+                        logger.warning(f"Failed to delete forum service message: {e}")
                 except Exception as e:
                     logger.warning(f"Failed to delete forum service message: {e}")
                 return

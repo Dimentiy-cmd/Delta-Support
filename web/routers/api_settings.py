@@ -6,6 +6,9 @@ from modules.config import Config
 from modules.database import AdminUser, SystemConfig, ProjectDatabase, KnowledgeBaseEntry, AIProvider
 from modules.user_info import (
     INTEGRATION_CONTEXT_DEFAULTS,
+    INTEGRATION_FEATURE_DEFAULTS,
+    INTEGRATION_FEATURE_META,
+    INTEGRATION_CHANNEL_TOOL_SUPPORT,
     INTEGRATION_TOOL_META,
     UserInfoService,
 )
@@ -482,7 +485,12 @@ _INTEGRATION_KEYS = [
     "integration_provide_ai_context",
     "integration_provide_manager_card",
     "integration_feature_subscription_profile",
-] + [f"integration_tool_{name}" for name in INTEGRATION_TOOL_META.keys()]
+    "integration_feature_subscription_url",
+] + [f"integration_tool_{name}" for name in INTEGRATION_TOOL_META.keys()] + [
+    f"integration_tool_{channel}_{name}"
+    for channel in ("support_api", "remnawave")
+    for name in INTEGRATION_TOOL_META.keys()
+]
 _TRUE_VALUES = ["1", "true", "yes", "y", "on"]
 
 
@@ -501,9 +509,21 @@ def _as_bool(raw, default: bool) -> bool:
 
 
 def _build_tool_permissions(values: dict) -> dict:
+    permissions = {}
+    for channel in ("support_api", "remnawave"):
+        permissions[channel] = {}
+        for name in INTEGRATION_TOOL_META.keys():
+            raw = values.get(f"integration_tool_{channel}_{name}")
+            if raw is None:
+                raw = values.get(f"integration_tool_{name}")
+            permissions[channel][name] = _as_bool(raw, True)
+    return permissions
+
+
+def _build_feature_permissions(values: dict) -> dict:
     return {
-        name: _as_bool(values.get(f"integration_tool_{name}"), True)
-        for name in INTEGRATION_TOOL_META.keys()
+        name: _as_bool(values.get(f"integration_feature_{name}"), default)
+        for name, default in INTEGRATION_FEATURE_DEFAULTS.items()
     }
 
 
@@ -538,9 +558,9 @@ async def _get_integration_payload() -> dict:
     remna_cache_ttl = int(remna_ttl_raw) if remna_ttl_raw.isdigit() else 120
 
     tool_permissions = _build_tool_permissions(values)
+    feature_permissions = _build_feature_permissions(values)
     provide_ai_context = _as_bool(values.get("integration_provide_ai_context"), INTEGRATION_CONTEXT_DEFAULTS["provide_ai_context"])
     provide_manager_card = _as_bool(values.get("integration_provide_manager_card"), INTEGRATION_CONTEXT_DEFAULTS["provide_manager_card"])
-    subscription_profile = _as_bool(values.get("integration_feature_subscription_profile"), True)
     svc = UserInfoService(cfg)
     capabilities = svc.channel_capabilities()
 
@@ -596,15 +616,13 @@ async def _get_integration_payload() -> dict:
         "permissions": {
             "provide_ai_context": provide_ai_context,
             "provide_manager_card": provide_manager_card,
-            "subscription_profile": subscription_profile,
+            **feature_permissions,
+            "features": feature_permissions,
             "tools": tool_permissions,
         },
+        "feature_meta": INTEGRATION_FEATURE_META,
         "capabilities": {channel: {name: bool(v) for name, v in tools.items()} for channel, tools in capabilities.items()},
-        "tool_meta": [
-            {"name": name, **meta}
-            for name, meta in INTEGRATION_TOOL_META.items()
-            if name != "get_subscription_info"
-        ],
+        "tool_meta": [{"name": name, **meta} for name, meta in INTEGRATION_TOOL_META.items()],
     }
 
 
@@ -716,19 +734,40 @@ async def _save_integration_payload(body: dict):
             key="integration_provide_manager_card",
             defaults={"value": "true" if bool(permissions.get("provide_manager_card")) else "false", "description": "Интеграция: карточка клиента менеджеру"},
         )
-    if "subscription_profile" in permissions:
-        await SystemConfig.update_or_create(
-            key="integration_feature_subscription_profile",
-            defaults={"value": "true" if bool(permissions.get("subscription_profile")) else "false", "description": "Интеграция: подписки, short_id, URL, ссылки и ноды"},
-        )
-    for name in INTEGRATION_TOOL_META.keys():
-        if name not in (permissions.get("tools") or {}):
+    features_payload = permissions.get("features") or {}
+    for name, meta in INTEGRATION_FEATURE_META.items():
+        if name not in permissions and name not in features_payload:
             continue
-        enabled = bool((permissions.get("tools") or {}).get(name))
+        enabled = bool(features_payload.get(name, permissions.get(name)))
         await SystemConfig.update_or_create(
-            key=f"integration_tool_{name}",
-            defaults={"value": "true" if enabled else "false", "description": f"Интеграция: tool {name}"},
+            key=f"integration_feature_{name}",
+            defaults={"value": "true" if enabled else "false", "description": f"Интеграция: {meta['label']}"},
         )
+
+    tools_payload = permissions.get("tools") or {}
+    if any(isinstance(value, dict) for value in tools_payload.values()):
+        for channel in ("support_api", "remnawave"):
+            channel_tools = tools_payload.get(channel) or {}
+            for name in INTEGRATION_TOOL_META.keys():
+                if name not in channel_tools:
+                    continue
+                enabled = bool(channel_tools.get(name))
+                await SystemConfig.update_or_create(
+                    key=f"integration_tool_{channel}_{name}",
+                    defaults={"value": "true" if enabled else "false", "description": f"Интеграция: tool {channel}.{name}"},
+                )
+    else:
+        for channel, supported in INTEGRATION_CHANNEL_TOOL_SUPPORT.items():
+            if channel == "none":
+                continue
+            for name in INTEGRATION_TOOL_META.keys():
+                if name not in tools_payload:
+                    continue
+                enabled = bool(tools_payload.get(name))
+                await SystemConfig.update_or_create(
+                    key=f"integration_tool_{channel}_{name}",
+                    defaults={"value": "true" if enabled else "false", "description": f"Интеграция: tool {channel}.{name}"},
+                )
 
 
 @router.get("/integration")

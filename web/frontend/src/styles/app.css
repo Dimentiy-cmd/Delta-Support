@@ -260,6 +260,13 @@ body.dark .p-dialog .p-dialog-footer {
   padding-top: calc(var(--app-padding) * 0.5);
 }
 
+.rail-footer {
+  margin-top: auto;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
 .rail-btn {
   width: 44px;
   height: 44px;

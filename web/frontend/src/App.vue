@@ -21,6 +21,17 @@
             <i class="pi pi-cog"></i>
           </RouterLink>
         </div>
+        <div class="rail-footer">
+          <a
+            class="rail-btn"
+            href="https://github.com/bekjonbegmatov/Delta-Support"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="GitHub"
+          >
+            <i class="pi pi-external-link"></i>
+          </a>
+        </div>
       </div>
     </aside>
     <div class="main">
