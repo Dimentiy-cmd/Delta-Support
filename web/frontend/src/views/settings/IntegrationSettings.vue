@@ -2,79 +2,310 @@
   <div>
     <div style="margin-bottom: 12px;">
       <div style="font-size: 18px; font-weight: 700;">Интеграция и бэкап</div>
-      <div class="muted" style="font-size: 13px;">Support API основного сервера и экспорт/импорт настроек</div>
+      <div class="muted" style="font-size: 13px;">Внешний канал данных клиента, разрешения AI/tools и экспорт настроек</div>
     </div>
 
-    <!-- Support API -->
     <div class="panel card" style="padding: 16px; border-radius: var(--app-radius); margin-bottom: 16px;">
-      <div style="font-weight: 700; margin-bottom: 4px;">Support API</div>
+      <div style="font-weight: 700; margin-bottom: 4px;">Активный канал</div>
       <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
-        Получение данных о клиенте (баланс, подписки, ключи) по Telegram ID.
-        Данные автоматически передаются AI для ответов и менеджеру при эскалации.
+        Пока одновременно активен только один источник данных о клиенте.
       </div>
 
-      <div style="display:flex; flex-direction:column; gap:12px; max-width: 640px;">
-        <div style="display:flex; align-items:center; gap:10px;">
-          <InputSwitch v-model="form.enabled" />
-          <span>Интеграция включена</span>
-        </div>
+      <div class="channel-grid">
+        <button
+          v-for="item in channels"
+          :key="item.id"
+          type="button"
+          class="channel-card"
+          :class="{ active: form.active_channel === item.id }"
+          @click="form.active_channel = item.id"
+        >
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <div style="font-weight:700;">{{ item.label }}</div>
+            <Tag
+              :severity="form.active_channel === item.id ? 'success' : (item.configured ? 'info' : 'secondary')"
+              :value="form.active_channel === item.id ? 'Активен' : (item.configured ? 'Готов' : 'Не настроен')"
+            />
+          </div>
+          <div class="muted" style="font-size: 12px; margin-top: 8px;">{{ item.description }}</div>
+        </button>
+      </div>
+    </div>
 
+    <div class="panel card" style="padding: 16px; border-radius: var(--app-radius); margin-bottom: 16px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom: 10px;">
+        <div>
+          <div style="font-weight: 700;">Support API</div>
+          <div class="muted" style="font-size: 13px;">Баланс, платежи, подписки и ключи с основного сервера</div>
+        </div>
+        <Tag :severity="form.active_channel === 'support_api' ? 'success' : 'secondary'" :value="form.active_channel === 'support_api' ? 'Активен' : 'Не активен'" />
+      </div>
+
+      <div class="form-grid">
         <div>
           <label class="f-label">URL сервера</label>
-          <InputText v-model="form.url" placeholder="https://web.deltavpn.me" style="width:100%;" />
+          <InputText v-model="form.support_api.url" placeholder="https://web.deltavpn.me" style="width:100%;" />
+        </div>
+        <div>
+          <label class="f-label">TTL кеша данных (сек)</label>
+          <InputText v-model="form.support_api.cache_ttl" type="number" style="width: 180px;" />
+        </div>
+      </div>
+
+      <div style="margin-top: 12px;">
+        <label class="f-label">
+          Токен
+          <span v-if="form.support_api.token_set" class="muted" style="font-weight:400;"> — установлен: {{ form.support_api.token_preview }}</span>
+        </label>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <InputText
+            v-model="form.support_api.token"
+            type="password"
+            :placeholder="form.support_api.token_set ? 'Оставьте пустым, чтобы не менять' : 'sup_...'"
+            style="width:100%;"
+            autocomplete="new-password"
+          />
+          <Button
+            v-if="form.support_api.token_set"
+            icon="pi pi-trash"
+            severity="danger"
+            text
+            rounded
+            title="Удалить токен"
+            @click="clearSupportToken"
+          />
+        </div>
+      </div>
+    </div>
+
+    <div class="panel card" style="padding: 16px; border-radius: var(--app-radius); margin-bottom: 16px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom: 10px;">
+        <div>
+          <div style="font-weight: 700;">Remnawave v3+</div>
+          <div class="muted" style="font-size: 13px;">Подписки, ссылки, ноды и устройства напрямую из Remnawave</div>
+        </div>
+        <Tag :severity="form.active_channel === 'remnawave' ? 'success' : 'secondary'" :value="form.active_channel === 'remnawave' ? 'Активен' : 'Не активен'" />
+      </div>
+
+      <div class="form-grid">
+        <div>
+          <label class="f-label">URL панели</label>
+          <InputText v-model="form.remnawave.url" placeholder="https://remna.example.com" style="width:100%;" />
+        </div>
+        <div>
+          <label class="f-label">Тип авторизации</label>
+          <Dropdown
+            v-model="form.remnawave.auth_type"
+            :options="authTypes"
+            optionLabel="label"
+            optionValue="value"
+            style="width: 220px;"
+          />
+        </div>
+        <div>
+          <label class="f-label">TTL кеша данных (сек)</label>
+          <InputText v-model="form.remnawave.cache_ttl" type="number" style="width: 180px;" />
+        </div>
+      </div>
+
+      <div style="margin-top: 12px; display:flex; flex-direction:column; gap:12px;">
+        <div v-if="form.remnawave.auth_type !== 'basic'">
+          <label class="f-label">
+            API key
+            <span v-if="form.remnawave.api_key_set" class="muted" style="font-weight:400;"> — установлен: {{ form.remnawave.api_key_preview }}</span>
+          </label>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <InputText
+              v-model="form.remnawave.api_key"
+              type="password"
+              :placeholder="form.remnawave.api_key_set ? 'Оставьте пустым, чтобы не менять' : 'rw_...'"
+              style="width:100%;"
+              autocomplete="new-password"
+            />
+            <Button
+              v-if="form.remnawave.api_key_set"
+              icon="pi pi-trash"
+              severity="danger"
+              text
+              rounded
+              title="Удалить API key"
+              @click="clearRemnaSecret('api_key')"
+            />
+          </div>
+        </div>
+
+        <div v-if="form.remnawave.auth_type === 'basic'" class="form-grid">
+          <div>
+            <label class="f-label">Username</label>
+            <InputText v-model="form.remnawave.username" placeholder="admin" style="width:100%;" />
+          </div>
+          <div>
+            <label class="f-label">
+              Password
+              <span v-if="form.remnawave.password_set" class="muted" style="font-weight:400;"> — установлен</span>
+            </label>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <InputText
+                v-model="form.remnawave.password"
+                type="password"
+                :placeholder="form.remnawave.password_set ? 'Оставьте пустым, чтобы не менять' : 'password'"
+                style="width:100%;"
+                autocomplete="new-password"
+              />
+              <Button
+                v-if="form.remnawave.password_set"
+                icon="pi pi-trash"
+                severity="danger"
+                text
+                rounded
+                title="Удалить пароль"
+                @click="clearRemnaSecret('password')"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div v-if="form.remnawave.auth_type === 'caddy'">
+          <label class="f-label">
+            Caddy token
+            <span v-if="form.remnawave.caddy_token_set" class="muted" style="font-weight:400;"> — установлен: {{ form.remnawave.caddy_token_preview }}</span>
+          </label>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <InputText
+              v-model="form.remnawave.caddy_token"
+              type="password"
+              :placeholder="form.remnawave.caddy_token_set ? 'Оставьте пустым, чтобы не менять' : 'caddy token'"
+              style="width:100%;"
+              autocomplete="new-password"
+            />
+            <Button
+              v-if="form.remnawave.caddy_token_set"
+              icon="pi pi-trash"
+              severity="danger"
+              text
+              rounded
+              title="Удалить Caddy token"
+              @click="clearRemnaSecret('caddy_token')"
+            />
+          </div>
         </div>
 
         <div>
           <label class="f-label">
-            Токен (sup_...)
-            <span v-if="tokenSet" class="muted" style="font-weight:400;"> — установлен: {{ tokenPreview }}</span>
+            Secret key / cookie
+            <span v-if="form.remnawave.secret_key_set" class="muted" style="font-weight:400;"> — установлен: {{ form.remnawave.secret_key_preview }}</span>
           </label>
-          <InputText v-model="form.token" type="password" :placeholder="tokenSet ? 'Оставьте пустым, чтобы не менять' : 'sup_...'" style="width:100%;" autocomplete="new-password" />
-        </div>
-
-        <div>
-          <label class="f-label">TTL кеша данных (сек)</label>
-          <InputText v-model="form.cache_ttl" type="number" style="width: 160px;" />
-        </div>
-
-        <div style="display:flex; gap:8px; align-items:center;">
-          <Button label="Сохранить" icon="pi pi-check" :loading="saving" @click="save" />
-          <Button v-if="tokenSet" label="Удалить токен" icon="pi pi-trash" severity="danger" text @click="clearToken" />
-        </div>
-        <div v-if="msg" :style="{ color: msgOk ? '#22c55e' : '#ef4444', fontSize: '13px' }">{{ msg }}</div>
-      </div>
-
-      <div style="border-top: 1px solid var(--app-border); margin: 16px 0; padding-top: 14px;">
-        <div style="font-weight: 600; margin-bottom: 8px;">Проверка подключения</div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap: wrap;">
-          <InputText v-model="testUserId" placeholder="Telegram ID клиента" style="width: 220px;" />
-          <Button label="Проверить" icon="pi pi-bolt" :loading="testing" @click="runTest" />
-        </div>
-        <div v-if="testError" style="color:#ef4444; font-size: 13px; margin-top: 8px;">{{ testError }}</div>
-        <div v-if="testResult" style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;">
-          <div>
-            <div class="muted" style="font-size: 12px; margin-bottom: 4px;">Контекст для AI</div>
-            <pre class="preview-pre">{{ testResult.ai_context }}</pre>
-          </div>
-          <div>
-            <div class="muted" style="font-size: 12px; margin-bottom: 4px;">Карточка для менеджера</div>
-            <pre class="preview-pre">{{ testResult.manager_card }}</pre>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <InputText
+              v-model="form.remnawave.secret_key"
+              type="password"
+              :placeholder="form.remnawave.secret_key_set ? 'Оставьте пустым, чтобы не менять' : 'cookie_name:cookie_value'"
+              style="width:100%;"
+              autocomplete="new-password"
+            />
+            <Button
+              v-if="form.remnawave.secret_key_set"
+              icon="pi pi-trash"
+              severity="danger"
+              text
+              rounded
+              title="Удалить secret key"
+              @click="clearRemnaSecret('secret_key')"
+            />
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Экспорт / импорт -->
+    <div class="panel card" style="padding: 16px; border-radius: var(--app-radius); margin-bottom: 16px;">
+      <div style="font-weight: 700; margin-bottom: 4px;">Разрешения и AI tool calling</div>
+      <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
+        Для активного канала можно включать только те действия, которые действительно должны быть доступны AI и менеджерам.
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:12px; margin-bottom: 16px;">
+        <label class="toggle-row">
+          <div>
+            <div style="font-weight:600;">Подписки, short_id, subscription URL, ссылки и ноды</div>
+            <div class="muted" style="font-size:12px;">Показывать менеджеру и AI данные подписок Remnawave, short_id, ссылки подписки и доступные ноды.</div>
+          </div>
+          <InputSwitch v-model="form.permissions.subscription_profile" />
+        </label>
+
+        <label class="toggle-row">
+          <div>
+            <div style="font-weight:600;">Передавать данные в AI-контекст</div>
+            <div class="muted" style="font-size:12px;">AI увидит данные аккаунта клиента в системном контексте.</div>
+          </div>
+          <InputSwitch v-model="form.permissions.provide_ai_context" />
+        </label>
+
+        <label class="toggle-row">
+          <div>
+            <div style="font-weight:600;">Показывать карточку менеджеру</div>
+            <div class="muted" style="font-size:12px;">Карточка клиента будет добавляться в топик, уведомления и веб-панель.</div>
+          </div>
+          <InputSwitch v-model="form.permissions.provide_manager_card" />
+        </label>
+      </div>
+
+      <div style="font-weight: 600; margin-bottom: 10px;">Инструменты</div>
+      <div class="tools-list">
+        <div v-for="tool in toolMeta" :key="tool.name" class="tool-row">
+          <div style="min-width:0;">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span style="font-weight:600;">{{ tool.label }}</span>
+              <Tag v-if="tool.destructive" severity="danger" value="Подтверждение клиента" />
+              <Tag v-if="!isToolSupported(tool.name)" severity="secondary" value="Не поддерживается каналом" />
+            </div>
+            <div class="muted" style="font-size:12px; margin-top:4px;">{{ tool.description }}</div>
+          </div>
+          <InputSwitch
+            v-model="form.permissions.tools[tool.name]"
+            :disabled="form.active_channel === 'none' || !isToolSupported(tool.name)"
+          />
+        </div>
+      </div>
+    </div>
+
+    <div class="panel card" style="padding: 16px; border-radius: var(--app-radius); margin-bottom: 16px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom: 8px; flex-wrap:wrap;">
+        <div>
+          <div style="font-weight: 700;">Проверка подключения</div>
+          <div class="muted" style="font-size: 13px;">Тестовый запрос по Telegram ID через активный канал.</div>
+        </div>
+        <Tag :severity="form.active_channel === 'none' ? 'secondary' : 'info'" :value="form.active_channel === 'none' ? 'Канал не выбран' : activeChannelLabel" />
+      </div>
+
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap: wrap;">
+        <InputText v-model="testUserId" placeholder="Telegram ID клиента" style="width: 220px;" />
+        <Button label="Проверить" icon="pi pi-bolt" :disabled="form.active_channel === 'none'" :loading="testing" @click="runTest" />
+        <Button label="Сохранить настройки" icon="pi pi-check" :loading="saving" @click="save" />
+      </div>
+      <div v-if="msg" :style="{ color: msgOk ? '#22c55e' : '#ef4444', fontSize: '13px', marginTop: '8px' }">{{ msg }}</div>
+      <div v-if="testError" style="color:#ef4444; font-size: 13px; margin-top: 8px;">{{ testError }}</div>
+      <div v-if="testResult" style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;">
+        <div>
+          <div class="muted" style="font-size: 12px; margin-bottom: 4px;">Контекст для AI</div>
+          <pre class="preview-pre">{{ testResult.ai_context }}</pre>
+        </div>
+        <div>
+          <div class="muted" style="font-size: 12px; margin-bottom: 4px;">Карточка для менеджера</div>
+          <pre class="preview-pre">{{ testResult.manager_card }}</pre>
+        </div>
+      </div>
+    </div>
+
     <div class="panel card" style="padding: 16px; border-radius: var(--app-radius);">
       <div style="font-weight: 700; margin-bottom: 4px;">Экспорт / импорт настроек</div>
       <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
-        Один JSON-файл: системные настройки, промпты, база знаний, AI-провайдеры. Чаты и пользователи панели не переносятся.
+        Один JSON-файл: системные настройки, промпты, база знаний, AI-провайдеры и интеграционные секреты.
       </div>
 
       <div style="display:flex; flex-direction:column; gap:12px; max-width: 640px;">
         <div style="display:flex; align-items:center; gap:10px;">
           <Checkbox v-model="includeSecrets" binary inputId="incsec" />
-          <label for="incsec">Включить секреты (API-ключи и токены)</label>
+          <label for="incsec">Включить секреты (API-ключи, токены, пароли)</label>
         </div>
         <div>
           <Button label="Скачать экспорт" icon="pi pi-download" :loading="exporting" @click="doExport" />
@@ -98,16 +329,65 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import InputSwitch from 'primevue/inputswitch'
 import Checkbox from 'primevue/checkbox'
 import Dropdown from 'primevue/dropdown'
+import Tag from 'primevue/tag'
 
-const form = ref({ enabled: false, url: '', token: '', cache_ttl: '120' })
-const tokenSet = ref(false)
-const tokenPreview = ref('')
+type ToolMeta = {
+  name: string
+  label: string
+  description: string
+  destructive: boolean
+}
+
+const authTypes = [
+  { label: 'API key', value: 'api_key' },
+  { label: 'Basic', value: 'basic' },
+  { label: 'Caddy', value: 'caddy' }
+]
+
+const channels = ref<any[]>([])
+const toolMeta = ref<ToolMeta[]>([])
+const capabilities = ref<Record<string, Record<string, boolean>>>({})
+
+const form = ref({
+  active_channel: 'none',
+  support_api: {
+    url: '',
+    cache_ttl: '120',
+    token: '',
+    token_set: false,
+    token_preview: ''
+  },
+  remnawave: {
+    url: '',
+    auth_type: 'api_key',
+    cache_ttl: '120',
+    api_key: '',
+    api_key_set: false,
+    api_key_preview: '',
+    secret_key: '',
+    secret_key_set: false,
+    secret_key_preview: '',
+    username: '',
+    password: '',
+    password_set: false,
+    caddy_token: '',
+    caddy_token_set: false,
+    caddy_token_preview: ''
+  },
+  permissions: {
+    subscription_profile: true,
+    provide_ai_context: true,
+    provide_manager_card: true,
+    tools: {} as Record<string, boolean>
+  }
+})
+
 const saving = ref(false)
 const msg = ref('')
 const msgOk = ref(false)
@@ -130,33 +410,93 @@ const importMsg = ref('')
 const importOk = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 
-async function load() {
-  const res = await fetch('/api/settings/support-api', { credentials: 'include' })
-  if (!res.ok) return
-  const data = await res.json()
-  form.value.enabled = !!data.enabled
-  form.value.url = data.url || ''
-  form.value.cache_ttl = String(data.cache_ttl ?? 120)
-  form.value.token = ''
-  tokenSet.value = !!data.token_set
-  tokenPreview.value = data.token_preview || ''
+const activeChannelLabel = computed(() => {
+  const item = channels.value.find((x) => x.id === form.value.active_channel)
+  return item?.label || 'Без интеграции'
+})
+
+function isToolSupported(name: string) {
+  return Boolean(capabilities.value?.[form.value.active_channel]?.[name])
 }
 
-async function save() {
+async function load() {
+  const res = await fetch('/api/settings/integration', { credentials: 'include' })
+  if (!res.ok) return
+  const data = await res.json()
+  channels.value = data.channels || []
+  toolMeta.value = data.tool_meta || []
+  capabilities.value = data.capabilities || {}
+  form.value.active_channel = data.active_channel || 'none'
+  form.value.support_api = {
+    url: data.support_api?.url || '',
+    cache_ttl: String(data.support_api?.cache_ttl ?? 120),
+    token: '',
+    token_set: !!data.support_api?.token_set,
+    token_preview: data.support_api?.token_preview || ''
+  }
+  form.value.remnawave = {
+    url: data.remnawave?.url || '',
+    auth_type: data.remnawave?.auth_type || 'api_key',
+    cache_ttl: String(data.remnawave?.cache_ttl ?? 120),
+    api_key: '',
+    api_key_set: !!data.remnawave?.api_key_set,
+    api_key_preview: data.remnawave?.api_key_preview || '',
+    secret_key: '',
+    secret_key_set: !!data.remnawave?.secret_key_set,
+    secret_key_preview: data.remnawave?.secret_key_preview || '',
+    username: data.remnawave?.username || '',
+    password: '',
+    password_set: !!data.remnawave?.password_set,
+    caddy_token: '',
+    caddy_token_set: !!data.remnawave?.caddy_token_set,
+    caddy_token_preview: data.remnawave?.caddy_token_preview || ''
+  }
+  form.value.permissions = {
+    subscription_profile: data.permissions?.subscription_profile !== false,
+    provide_ai_context: data.permissions?.provide_ai_context !== false,
+    provide_manager_card: data.permissions?.provide_manager_card !== false,
+    tools: { ...(data.permissions?.tools || {}) }
+  }
+}
+
+function buildPayload(extra: any = {}) {
+  return {
+    active_channel: form.value.active_channel,
+    support_api: {
+      url: form.value.support_api.url,
+      cache_ttl: form.value.support_api.cache_ttl,
+      ...(form.value.support_api.token.trim() ? { token: form.value.support_api.token.trim() } : {}),
+      ...(extra.support_api || {})
+    },
+    remnawave: {
+      url: form.value.remnawave.url,
+      auth_type: form.value.remnawave.auth_type,
+      cache_ttl: form.value.remnawave.cache_ttl,
+      username: form.value.remnawave.username,
+      ...(form.value.remnawave.api_key.trim() ? { api_key: form.value.remnawave.api_key.trim() } : {}),
+      ...(form.value.remnawave.secret_key.trim() ? { secret_key: form.value.remnawave.secret_key.trim() } : {}),
+      ...(form.value.remnawave.password.trim() ? { password: form.value.remnawave.password.trim() } : {}),
+      ...(form.value.remnawave.caddy_token.trim() ? { caddy_token: form.value.remnawave.caddy_token.trim() } : {}),
+      ...(extra.remnawave || {})
+    },
+    permissions: {
+      subscription_profile: form.value.permissions.subscription_profile,
+      provide_ai_context: form.value.permissions.provide_ai_context,
+      provide_manager_card: form.value.permissions.provide_manager_card,
+      tools: form.value.permissions.tools
+    }
+  }
+}
+
+async function save(extra: any = {}) {
   msg.value = ''
   saving.value = true
   try {
-    const body: any = {
-      enabled: form.value.enabled,
-      url: form.value.url,
-      cache_ttl: form.value.cache_ttl
-    }
-    if (form.value.token.trim()) body.token = form.value.token.trim()
-    const res = await fetch('/api/settings/support-api', {
+    const res = await fetch('/api/settings/integration', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify(body)
+      body: JSON.stringify(buildPayload(extra))
     })
     if (!res.ok) {
       const data = await res.json().catch(() => ({ detail: 'Ошибка' }))
@@ -173,14 +513,12 @@ async function save() {
   }
 }
 
-async function clearToken() {
-  await fetch('/api/settings/support-api', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ clear_token: true })
-  })
-  await load()
+async function clearSupportToken() {
+  await save({ support_api: { clear_token: true } })
+}
+
+async function clearRemnaSecret(field: 'api_key' | 'secret_key' | 'password' | 'caddy_token') {
+  await save({ remnawave: { [`clear_${field}`]: true } })
 }
 
 async function runTest() {
@@ -192,11 +530,11 @@ async function runTest() {
   }
   testing.value = true
   try {
-    const res = await fetch('/api/settings/support-api/test', {
+    const res = await fetch('/api/settings/integration/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ user_id: testUserId.value.trim() })
+      body: JSON.stringify({ user_id: testUserId.value.trim(), channel: form.value.active_channel })
     })
     const data = await res.json()
     if (!data.ok) {
@@ -298,5 +636,46 @@ onMounted(load)
   max-height: 320px;
   overflow: auto;
   margin: 0;
+}
+.channel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.channel-card {
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 12px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.channel-card.active {
+  border-color: rgba(34, 197, 94, 0.55);
+  background: rgba(34, 197, 94, 0.08);
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.toggle-row,
+.tool-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+@media (max-width: 720px) {
+  .toggle-row,
+  .tool-row {
+    align-items: flex-start;
+  }
 }
 </style>

@@ -1,11 +1,14 @@
 import logging
 from datetime import datetime, timezone
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from modules.config import Config
 from modules.database import AdminUser, SystemConfig, ProjectDatabase, KnowledgeBaseEntry, AIProvider
-from modules.user_info import UserInfoService
+from modules.user_info import (
+    INTEGRATION_CONTEXT_DEFAULTS,
+    INTEGRATION_TOOL_META,
+    UserInfoService,
+)
 from web.deps import get_current_user
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -459,79 +462,292 @@ async def put_bot_settings(request: Request, user: AdminUser = Depends(get_curre
 
 
 # ----------------------------------------------------------------------
-# Support API (интеграция с основным сервером: инфо о пользователе)
+# Integration channels: Support API / Remnawave
 # ----------------------------------------------------------------------
 
 _SUPPORT_API_KEYS = ["support_api_enabled", "support_api_url", "support_api_token", "support_api_cache_ttl"]
+_REMNAWAVE_KEYS = [
+    "remnawave_enabled",
+    "remnawave_url",
+    "remnawave_api_key",
+    "remnawave_secret_key",
+    "remnawave_auth_type",
+    "remnawave_username",
+    "remnawave_password",
+    "remnawave_caddy_token",
+    "remnawave_cache_ttl",
+]
+_INTEGRATION_KEYS = [
+    "integration_active_channel",
+    "integration_provide_ai_context",
+    "integration_provide_manager_card",
+    "integration_feature_subscription_profile",
+] + [f"integration_tool_{name}" for name in INTEGRATION_TOOL_META.keys()]
 _TRUE_VALUES = ["1", "true", "yes", "y", "on"]
 
 
-@router.get("/support-api")
-async def get_support_api_settings(user: AdminUser = Depends(get_current_user)):
-    _require_admin(user)
-    cfg = Config()
-    rows = await SystemConfig.filter(key__in=_SUPPORT_API_KEYS).all()
-    values = {r.key: r.value for r in rows}
+def _mask_secret(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    tail = value[-4:] if len(value) >= 4 else value
+    return f"••••{tail}"
 
-    enabled_raw = (values.get("support_api_enabled") or "").strip()
-    enabled = enabled_raw.lower() in _TRUE_VALUES if enabled_raw else bool(cfg.support_api_enabled)
-    url = (values.get("support_api_url") or cfg.support_api_url or "").strip()
-    token = (values.get("support_api_token") or cfg.support_api_token or "").strip()
-    ttl_raw = (values.get("support_api_cache_ttl") or "").strip()
-    cache_ttl = int(ttl_raw) if ttl_raw.isdigit() else 120
 
-    token_preview = f"••••{token[-4:]}" if len(token) >= 4 else ("••••" if token else "")
+def _as_bool(raw, default: bool) -> bool:
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in _TRUE_VALUES
+
+
+def _build_tool_permissions(values: dict) -> dict:
     return {
-        "enabled": enabled,
-        "url": url,
-        "cache_ttl": cache_ttl,
-        "token_set": bool(token),
-        "token_preview": token_preview,
+        name: _as_bool(values.get(f"integration_tool_{name}"), True)
+        for name in INTEGRATION_TOOL_META.keys()
     }
 
 
-@router.put("/support-api")
-async def put_support_api_settings(request: Request, user: AdminUser = Depends(get_current_user)):
-    _require_admin(user)
-    body = await request.json()
+async def _get_integration_payload() -> dict:
+    cfg = Config()
+    keys = _SUPPORT_API_KEYS + _REMNAWAVE_KEYS + _INTEGRATION_KEYS
+    rows = await SystemConfig.filter(key__in=keys).all()
+    values = {r.key: r.value for r in rows}
 
-    if "enabled" in body:
-        await SystemConfig.update_or_create(
-            key="support_api_enabled",
-            defaults={"value": "true" if bool(body.get("enabled")) else "false", "description": "Support API: включено"},
-        )
-    if "url" in body:
-        url = str(body.get("url") or "").strip().rstrip("/")
+    active_channel = (values.get("integration_active_channel") or cfg.integration_active_channel or "").strip().lower()
+    if active_channel not in ("none", "support_api", "remnawave"):
+        if _as_bool(values.get("support_api_enabled"), bool(cfg.support_api_enabled)):
+            active_channel = "support_api"
+        elif _as_bool(values.get("remnawave_enabled"), bool(cfg.remnawave_enabled)):
+            active_channel = "remnawave"
+        else:
+            active_channel = "none"
+
+    support_url = (values.get("support_api_url") or cfg.support_api_url or "").strip().rstrip("/")
+    support_token = (values.get("support_api_token") or cfg.support_api_token or "").strip()
+    support_ttl_raw = (values.get("support_api_cache_ttl") or "").strip()
+    support_cache_ttl = int(support_ttl_raw) if support_ttl_raw.isdigit() else 120
+
+    remna_url = (values.get("remnawave_url") or cfg.remnawave_url or "").strip().rstrip("/")
+    remna_api_key = (values.get("remnawave_api_key") or cfg.remnawave_api_key or "").strip()
+    remna_secret_key = (values.get("remnawave_secret_key") or cfg.remnawave_secret_key or "").strip()
+    remna_auth_type = (values.get("remnawave_auth_type") or cfg.remnawave_auth_type or "api_key").strip().lower()
+    remna_username = (values.get("remnawave_username") or cfg.remnawave_username or "").strip()
+    remna_password = (values.get("remnawave_password") or cfg.remnawave_password or "").strip()
+    remna_caddy_token = (values.get("remnawave_caddy_token") or cfg.remnawave_caddy_token or "").strip()
+    remna_ttl_raw = (values.get("remnawave_cache_ttl") or "").strip()
+    remna_cache_ttl = int(remna_ttl_raw) if remna_ttl_raw.isdigit() else 120
+
+    tool_permissions = _build_tool_permissions(values)
+    provide_ai_context = _as_bool(values.get("integration_provide_ai_context"), INTEGRATION_CONTEXT_DEFAULTS["provide_ai_context"])
+    provide_manager_card = _as_bool(values.get("integration_provide_manager_card"), INTEGRATION_CONTEXT_DEFAULTS["provide_manager_card"])
+    subscription_profile = _as_bool(values.get("integration_feature_subscription_profile"), True)
+    svc = UserInfoService(cfg)
+    capabilities = svc.channel_capabilities()
+
+    return {
+        "active_channel": active_channel,
+        "channels": [
+            {
+                "id": "support_api",
+                "label": "Support API",
+                "description": "Баланс, платежи, подписки и ключи с основного сервера.",
+                "configured": bool(support_url and support_token),
+            },
+            {
+                "id": "remnawave",
+                "label": "Remnawave v3+",
+                "description": "Подписки, ссылки, ноды и устройства напрямую из панели Remnawave.",
+                "configured": bool(
+                    remna_url and (
+                        (remna_auth_type == "basic" and remna_username and remna_password)
+                        or (remna_auth_type == "caddy" and (remna_caddy_token or remna_api_key))
+                        or (remna_auth_type != "basic" and remna_auth_type != "caddy" and remna_api_key)
+                    )
+                ),
+            },
+            {
+                "id": "none",
+                "label": "Без интеграции",
+                "description": "AI и менеджеры не получают данные аккаунта из внешней системы.",
+                "configured": True,
+            },
+        ],
+        "support_api": {
+            "enabled": active_channel == "support_api",
+            "url": support_url,
+            "cache_ttl": support_cache_ttl,
+            "token_set": bool(support_token),
+            "token_preview": _mask_secret(support_token),
+        },
+        "remnawave": {
+            "enabled": active_channel == "remnawave",
+            "url": remna_url,
+            "auth_type": remna_auth_type,
+            "cache_ttl": remna_cache_ttl,
+            "api_key_set": bool(remna_api_key),
+            "api_key_preview": _mask_secret(remna_api_key),
+            "secret_key_set": bool(remna_secret_key),
+            "secret_key_preview": _mask_secret(remna_secret_key),
+            "username": remna_username,
+            "password_set": bool(remna_password),
+            "caddy_token_set": bool(remna_caddy_token),
+            "caddy_token_preview": _mask_secret(remna_caddy_token),
+        },
+        "permissions": {
+            "provide_ai_context": provide_ai_context,
+            "provide_manager_card": provide_manager_card,
+            "subscription_profile": subscription_profile,
+            "tools": tool_permissions,
+        },
+        "capabilities": {channel: {name: bool(v) for name, v in tools.items()} for channel, tools in capabilities.items()},
+        "tool_meta": [
+            {"name": name, **meta}
+            for name, meta in INTEGRATION_TOOL_META.items()
+            if name != "get_subscription_info"
+        ],
+    }
+
+
+async def _save_integration_payload(body: dict):
+    active_channel = str(body.get("active_channel") or "none").strip().lower()
+    if active_channel not in ("none", "support_api", "remnawave"):
+        raise HTTPException(status_code=400, detail="active_channel must be none, support_api or remnawave")
+
+    await SystemConfig.update_or_create(
+        key="integration_active_channel",
+        defaults={"value": active_channel, "description": "Активный интеграционный канал"},
+    )
+    await SystemConfig.update_or_create(
+        key="support_api_enabled",
+        defaults={"value": "true" if active_channel == "support_api" else "false", "description": "Support API: включено"},
+    )
+    await SystemConfig.update_or_create(
+        key="remnawave_enabled",
+        defaults={"value": "true" if active_channel == "remnawave" else "false", "description": "Remnawave: включено"},
+    )
+
+    support = body.get("support_api") or {}
+    if "url" in support:
+        url = str(support.get("url") or "").strip().rstrip("/")
         if url:
             await SystemConfig.update_or_create(key="support_api_url", defaults={"value": url, "description": "Support API: URL сервера"})
         else:
             await SystemConfig.filter(key="support_api_url").delete()
-    if "cache_ttl" in body:
-        ttl = body.get("cache_ttl")
+    if "cache_ttl" in support:
+        ttl = support.get("cache_ttl")
         if ttl is None or str(ttl).strip() == "":
             await SystemConfig.filter(key="support_api_cache_ttl").delete()
         else:
             try:
                 ttl_n = max(10, int(ttl))
             except Exception:
-                raise HTTPException(status_code=400, detail="cache_ttl must be integer")
-            await SystemConfig.update_or_create(key="support_api_cache_ttl", defaults={"value": str(ttl_n), "description": "Support API: TTL кеша (сек)"})
-    # Токен обновляем только если явно передан непустым; clear_token=true удаляет
-    if body.get("clear_token"):
+                raise HTTPException(status_code=400, detail="support_api.cache_ttl must be integer")
+            await SystemConfig.update_or_create(
+                key="support_api_cache_ttl",
+                defaults={"value": str(ttl_n), "description": "Support API: TTL кеша (сек)"},
+            )
+    if support.get("clear_token"):
         await SystemConfig.filter(key="support_api_token").delete()
-    elif str(body.get("token") or "").strip():
+    elif str(support.get("token") or "").strip():
         await SystemConfig.update_or_create(
             key="support_api_token",
-            defaults={"value": str(body.get("token")).strip(), "description": "Support API: токен"},
+            defaults={"value": str(support.get("token")).strip(), "description": "Support API: токен"},
         )
 
+    remna = body.get("remnawave") or {}
+    if "url" in remna:
+        url = str(remna.get("url") or "").strip().rstrip("/")
+        if url:
+            await SystemConfig.update_or_create(key="remnawave_url", defaults={"value": url, "description": "Remnawave: URL панели"})
+        else:
+            await SystemConfig.filter(key="remnawave_url").delete()
+    if "auth_type" in remna:
+        auth_type = str(remna.get("auth_type") or "api_key").strip().lower()
+        if auth_type not in ("api_key", "basic", "caddy"):
+            raise HTTPException(status_code=400, detail="remnawave.auth_type must be api_key, basic or caddy")
+        await SystemConfig.update_or_create(key="remnawave_auth_type", defaults={"value": auth_type, "description": "Remnawave: auth type"})
+    if "cache_ttl" in remna:
+        ttl = remna.get("cache_ttl")
+        if ttl is None or str(ttl).strip() == "":
+            await SystemConfig.filter(key="remnawave_cache_ttl").delete()
+        else:
+            try:
+                ttl_n = max(10, int(ttl))
+            except Exception:
+                raise HTTPException(status_code=400, detail="remnawave.cache_ttl must be integer")
+            await SystemConfig.update_or_create(
+                key="remnawave_cache_ttl",
+                defaults={"value": str(ttl_n), "description": "Remnawave: TTL кеша (сек)"},
+            )
+    secret_fields = {
+        "api_key": ("remnawave_api_key", "Remnawave: API key"),
+        "secret_key": ("remnawave_secret_key", "Remnawave: secret key/cookie"),
+        "username": ("remnawave_username", "Remnawave: username"),
+        "password": ("remnawave_password", "Remnawave: password"),
+        "caddy_token": ("remnawave_caddy_token", "Remnawave: caddy token"),
+    }
+    for field, (key, description) in secret_fields.items():
+        clear_key = f"clear_{field}"
+        if remna.get(clear_key):
+            await SystemConfig.filter(key=key).delete()
+            continue
+        if field == "username":
+            if field in remna:
+                value = str(remna.get(field) or "").strip()
+                if value:
+                    await SystemConfig.update_or_create(key=key, defaults={"value": value, "description": description})
+                else:
+                    await SystemConfig.filter(key=key).delete()
+            continue
+        if str(remna.get(field) or "").strip():
+            await SystemConfig.update_or_create(
+                key=key,
+                defaults={"value": str(remna.get(field)).strip(), "description": description},
+            )
+
+    permissions = body.get("permissions") or {}
+    if "provide_ai_context" in permissions:
+        await SystemConfig.update_or_create(
+            key="integration_provide_ai_context",
+            defaults={"value": "true" if bool(permissions.get("provide_ai_context")) else "false", "description": "Интеграция: передавать данные в AI контекст"},
+        )
+    if "provide_manager_card" in permissions:
+        await SystemConfig.update_or_create(
+            key="integration_provide_manager_card",
+            defaults={"value": "true" if bool(permissions.get("provide_manager_card")) else "false", "description": "Интеграция: карточка клиента менеджеру"},
+        )
+    if "subscription_profile" in permissions:
+        await SystemConfig.update_or_create(
+            key="integration_feature_subscription_profile",
+            defaults={"value": "true" if bool(permissions.get("subscription_profile")) else "false", "description": "Интеграция: подписки, short_id, URL, ссылки и ноды"},
+        )
+    for name in INTEGRATION_TOOL_META.keys():
+        if name not in (permissions.get("tools") or {}):
+            continue
+        enabled = bool((permissions.get("tools") or {}).get(name))
+        await SystemConfig.update_or_create(
+            key=f"integration_tool_{name}",
+            defaults={"value": "true" if enabled else "false", "description": f"Интеграция: tool {name}"},
+        )
+
+
+@router.get("/integration")
+async def get_integration_settings(user: AdminUser = Depends(get_current_user)):
+    _require_admin(user)
+    return await _get_integration_payload()
+
+
+@router.put("/integration")
+async def put_integration_settings(request: Request, user: AdminUser = Depends(get_current_user)):
+    _require_admin(user)
+    body = await request.json()
+    await _save_integration_payload(body)
     _invalidate_runtime_caches(request)
     return {"ok": True}
 
 
-@router.post("/support-api/test")
-async def test_support_api(request: Request, user: AdminUser = Depends(get_current_user)):
-    """Тестовый запрос к Support API: возвращает сырые данные и оба формата (AI/менеджер)"""
+@router.post("/integration/test")
+async def test_integration(request: Request, user: AdminUser = Depends(get_current_user)):
     _require_admin(user)
     body = await request.json()
     user_id = body.get("user_id")
@@ -542,37 +758,83 @@ async def test_support_api(request: Request, user: AdminUser = Depends(get_curre
     except Exception:
         raise HTTPException(status_code=400, detail="user_id must be integer")
 
+    override_channel = str(body.get("channel") or "").strip().lower()
+    if override_channel and override_channel not in ("support_api", "remnawave"):
+        raise HTTPException(status_code=400, detail="channel must be support_api or remnawave")
+
     svc = UserInfoService(Config())
     await svc._refresh_settings(force=True)
-    if not svc.base_url or not svc.token:
-        return {"ok": False, "error": "not_configured", "detail": "Не заданы URL или токен"}
+    if override_channel:
+        svc.active_channel = override_channel
 
-    url = f"{svc.base_url}/api/support/user_info"
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                url,
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {svc.token}"},
-                json={"user_id": user_id},
-                timeout=10.0,
-            )
-    except Exception as e:
-        return {"ok": False, "error": "request_failed", "detail": str(e)[:200]}
+    if not svc.is_configured():
+        return {"ok": False, "error": "not_configured"}
 
-    if resp.status_code != 200:
-        return {"ok": False, "error": f"http_{resp.status_code}", "detail": resp.text[:300]}
-    try:
-        data = resp.json()
-    except Exception:
-        return {"ok": False, "error": "invalid_json", "detail": resp.text[:300]}
-    if not data.get("ok"):
-        return {"ok": False, "error": data.get("error") or "unknown_error"}
+    data = await svc.get_user_info(user_id, force=True)
+    if not data:
+        return {"ok": False, "error": "not_found"}
 
     return {
         "ok": True,
+        "channel": data.get("channel") or svc.active_channel,
         "ai_context": svc.format_for_ai(data),
         "manager_card": svc.format_for_manager(data),
+        "account": data,
     }
+
+
+# Legacy endpoints for old frontend code
+@router.get("/support-api")
+async def get_support_api_settings(user: AdminUser = Depends(get_current_user)):
+    _require_admin(user)
+    payload = await _get_integration_payload()
+    return payload["support_api"]
+
+
+@router.put("/support-api")
+async def put_support_api_settings(request: Request, user: AdminUser = Depends(get_current_user)):
+    _require_admin(user)
+    body = await request.json()
+    current = await _get_integration_payload()
+    active = current["active_channel"]
+    if "enabled" in body:
+        active = "support_api" if body.get("enabled") else ("none" if active == "support_api" else active)
+    merged = {
+        "active_channel": active,
+        "support_api": {
+            "url": body.get("url", current["support_api"]["url"]),
+            "cache_ttl": body.get("cache_ttl", current["support_api"]["cache_ttl"]),
+            "token": body.get("token"),
+            "clear_token": body.get("clear_token"),
+        },
+        "remnawave": {},
+        "permissions": current["permissions"],
+    }
+    await _save_integration_payload(merged)
+    _invalidate_runtime_caches(request)
+    return {"ok": True}
+
+
+@router.post("/support-api/test")
+async def test_support_api(request: Request, user: AdminUser = Depends(get_current_user)):
+    _require_admin(user)
+    body = await request.json()
+    user_id = body.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    try:
+        user_id = int(user_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="user_id must be integer")
+    svc = UserInfoService(Config())
+    await svc._refresh_settings(force=True)
+    svc.active_channel = "support_api"
+    if not svc.is_configured():
+        return {"ok": False, "error": "not_configured"}
+    data = await svc.get_user_info(user_id, force=True)
+    if not data:
+        return {"ok": False, "error": "not_found"}
+    return {"ok": True, "channel": "support_api", "ai_context": svc.format_for_ai(data), "manager_card": svc.format_for_manager(data), "account": data}
 
 
 # ----------------------------------------------------------------------
@@ -581,7 +843,15 @@ async def test_support_api(request: Request, user: AdminUser = Depends(get_curre
 
 _EXPORT_TYPE = "delta-support-settings"
 _EXPORT_VERSION = 1
-_SECRET_SYS_KEYS = {"ai_support_api_key", "ai_support_api_keys", "support_api_token"}
+_SECRET_SYS_KEYS = {
+    "ai_support_api_key",
+    "ai_support_api_keys",
+    "support_api_token",
+    "remnawave_api_key",
+    "remnawave_secret_key",
+    "remnawave_password",
+    "remnawave_caddy_token",
+}
 
 
 @router.get("/export")

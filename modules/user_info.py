@@ -1,56 +1,113 @@
 """
-Интеграция с Support API основного сервера (Delta VPN).
-Получение информации о пользователе по telegram_id: баланс, ключи,
-подписки, транзакции. Данные используются:
-  - как контекст для AI при ответах клиенту
-  - как карточка клиента для менеджера при эскалации
+Интеграционный слой данных о клиенте.
 
-Настройки хранятся в SystemConfig (приоритет) с fallback на .env:
-  support_api_enabled  - вкл/выкл интеграции
-  support_api_url      - базовый URL сервера (например https://web.deltavpn.me)
-  support_api_token    - токен sup_...
-  support_api_cache_ttl - TTL кеша данных пользователя в секундах
+Сейчас поддерживаются два канала:
+  - Support API
+  - Remnawave v3+
+
+Одновременно активен только один канал. Настройки хранятся в SystemConfig,
+а .env используется как bootstrap/fallback.
 """
 
 import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, Dict, List
+from typing import Dict, List, Optional
 
 import httpx
 
 from modules.config import Config
 from modules.database import SystemConfig
+from modules.remnawave import RemnawaveAPI, RemnawaveAPIError
 
 logger = logging.getLogger(__name__)
 
 _TRUE_VALUES = ("1", "true", "yes", "y", "on")
+_SUPPORTED_CHANNELS = ("none", "support_api", "remnawave")
+
+INTEGRATION_TOOL_META = {
+    "check_payment": {
+        "label": "Проверка платежа",
+        "description": "AI может уточнять статус платежа по transaction_id/order_id.",
+        "destructive": False,
+    },
+    "get_subscription_info": {
+        "label": "Информация о подписке",
+        "description": "AI может читать срок, статус, трафик и лимит устройств подписки клиента.",
+        "destructive": False,
+    },
+    "get_subscription_devices": {
+        "label": "Список устройств",
+        "description": "AI может получать список устройств, привязанных к подписке клиента.",
+        "destructive": False,
+    },
+    "reset_devices": {
+        "label": "Сброс всех устройств",
+        "description": "AI может предложить сбросить все устройства подписки. Выполнение только после подтверждения клиента.",
+        "destructive": True,
+    },
+    "revoke_subscription": {
+        "label": "Перевыпуск подписки",
+        "description": "AI может предложить перевыпустить подписку. Выполнение только после подтверждения клиента.",
+        "destructive": True,
+    },
+    "delete_device": {
+        "label": "Удаление одного устройства",
+        "description": "AI может предложить удалить конкретное устройство по HWID. Выполнение только после подтверждения клиента.",
+        "destructive": True,
+    },
+}
+
+INTEGRATION_TOOL_DEFAULTS = {name: True for name in INTEGRATION_TOOL_META.keys()}
+INTEGRATION_CONTEXT_DEFAULTS = {
+    "provide_ai_context": True,
+    "provide_manager_card": True,
+}
+INTEGRATION_FEATURE_DEFAULTS = {
+    "subscription_profile": True,
+}
+INTEGRATION_CHANNEL_TOOL_SUPPORT = {
+    "support_api": {
+        "check_payment",
+        "get_subscription_info",
+        "get_subscription_devices",
+        "reset_devices",
+        "revoke_subscription",
+        "delete_device",
+    },
+    "remnawave": {
+        "get_subscription_info",
+        "get_subscription_devices",
+        "reset_devices",
+        "revoke_subscription",
+        "delete_device",
+    },
+    "none": set(),
+}
 
 
 @dataclass
 class PendingAction:
-    """Разрушающее действие (сброс устройств, перевыпуск подписки), которое AI
-    предложил, но не выполнило — ждёт явного подтверждения клиента кнопкой"""
-    action: str  # "reset_devices" | "revoke_subscription" | "delete_device"
+    """Разрушающее действие, которое AI предложил, но не выполнил без подтверждения клиента."""
+
+    action: str
     params: Dict = field(default_factory=dict)
     confirm_text: str = ""
 
 
 def _fmt_gb(value_bytes) -> str:
-    """Байты -> строка в ГБ"""
     try:
         n = int(value_bytes or 0)
     except (TypeError, ValueError):
         return "?"
     if n <= 0:
         return "0"
-    gb = n / (1024 ** 3)
+    gb = n / (1024**3)
     return f"{gb:.1f}" if gb < 100 else f"{gb:.0f}"
 
 
 def _fmt_date(iso: Optional[str]) -> str:
-    """ISO-дата -> ДД.ММ.ГГГГ"""
     if not iso:
         return "—"
     try:
@@ -72,130 +129,218 @@ def _fmt_datetime(iso: Optional[str]) -> str:
         return str(iso)[:16]
 
 
+def _to_iso(value) -> Optional[str]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _parse_dt(value) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _as_bool(raw, default: bool) -> bool:
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in _TRUE_VALUES
+
+
 class UserInfoService:
-    """Клиент Support API с кешированием и форматированием данных"""
+    """Единая точка доступа к внешнему источнику данных о клиенте."""
 
     def __init__(self, config: Config):
         self.config = config
         self._settings_ts = 0.0
         self._settings_cache_ttl = 5.0
-        self.enabled = bool(getattr(config, "support_api_enabled", False))
-        self.base_url = (getattr(config, "support_api_url", "") or "").strip()
-        self.token = (getattr(config, "support_api_token", "") or "").strip()
-        self.cache_ttl = 120.0
-        # Кеш данных пользователей: telegram_id -> (timestamp, data)
-        self._user_cache: Dict[int, tuple] = {}
+        self.active_channel = self._normalize_channel(getattr(config, "integration_active_channel", "support_api"))
+
+        self.support_api_enabled = bool(getattr(config, "support_api_enabled", False))
+        self.support_api_url = (getattr(config, "support_api_url", "") or "").strip()
+        self.support_api_token = (getattr(config, "support_api_token", "") or "").strip()
+        self.support_api_cache_ttl = 120.0
+
+        self.remnawave_enabled = bool(getattr(config, "remnawave_enabled", False))
+        self.remnawave_url = (getattr(config, "remnawave_url", "") or "").strip()
+        self.remnawave_api_key = (getattr(config, "remnawave_api_key", "") or "").strip()
+        self.remnawave_secret_key = (getattr(config, "remnawave_secret_key", "") or "").strip()
+        self.remnawave_auth_type = (getattr(config, "remnawave_auth_type", "") or "api_key").strip().lower()
+        self.remnawave_username = (getattr(config, "remnawave_username", "") or "").strip()
+        self.remnawave_password = (getattr(config, "remnawave_password", "") or "").strip()
+        self.remnawave_caddy_token = (getattr(config, "remnawave_caddy_token", "") or "").strip()
+        self.remnawave_cache_ttl = 120.0
+
+        self._tool_flags = dict(INTEGRATION_TOOL_DEFAULTS)
+        self._provide_ai_context = INTEGRATION_CONTEXT_DEFAULTS["provide_ai_context"]
+        self._provide_manager_card = INTEGRATION_CONTEXT_DEFAULTS["provide_manager_card"]
+        self._feature_flags = dict(INTEGRATION_FEATURE_DEFAULTS)
+        self._user_cache: Dict[str, tuple] = {}
+
+    @staticmethod
+    def _normalize_channel(raw: Optional[str]) -> str:
+        value = (raw or "").strip().lower()
+        return value if value in _SUPPORTED_CHANNELS else "none"
+
+    @classmethod
+    def get_tool_meta(cls) -> Dict[str, Dict]:
+        return INTEGRATION_TOOL_META
+
+    @classmethod
+    def get_channel_tool_support(cls) -> Dict[str, set]:
+        return INTEGRATION_CHANNEL_TOOL_SUPPORT
+
+    def _cache_key(self, channel: str, telegram_id: int) -> str:
+        return f"{channel}:{int(telegram_id)}"
 
     async def _refresh_settings(self, force: bool = False):
         now = time.monotonic()
         if not force and now - self._settings_ts < self._settings_cache_ttl:
             return
+        keys = [
+            "integration_active_channel",
+            "integration_provide_ai_context",
+            "integration_provide_manager_card",
+            "integration_feature_subscription_profile",
+            "support_api_enabled",
+            "support_api_url",
+            "support_api_token",
+            "support_api_cache_ttl",
+            "remnawave_enabled",
+            "remnawave_url",
+            "remnawave_api_key",
+            "remnawave_secret_key",
+            "remnawave_auth_type",
+            "remnawave_username",
+            "remnawave_password",
+            "remnawave_caddy_token",
+            "remnawave_cache_ttl",
+        ] + [f"integration_tool_{name}" for name in INTEGRATION_TOOL_META.keys()]
         try:
-            keys = ["support_api_enabled", "support_api_url", "support_api_token", "support_api_cache_ttl"]
             rows = await SystemConfig.filter(key__in=keys).all()
             values = {r.key: (r.value or "") for r in rows}
 
-            enabled_raw = (values.get("support_api_enabled") or "").strip()
-            if enabled_raw:
-                self.enabled = enabled_raw.lower() in _TRUE_VALUES
-            else:
-                self.enabled = bool(getattr(self.config, "support_api_enabled", False))
-
-            self.base_url = (values.get("support_api_url") or getattr(self.config, "support_api_url", "") or "").strip().rstrip("/")
-            self.token = (values.get("support_api_token") or getattr(self.config, "support_api_token", "") or "").strip()
-
+            self.support_api_enabled = _as_bool(values.get("support_api_enabled"), bool(getattr(self.config, "support_api_enabled", False)))
+            self.support_api_url = (values.get("support_api_url") or getattr(self.config, "support_api_url", "") or "").strip().rstrip("/")
+            self.support_api_token = (values.get("support_api_token") or getattr(self.config, "support_api_token", "") or "").strip()
             ttl_raw = (values.get("support_api_cache_ttl") or "").strip()
-            if ttl_raw.isdigit():
-                self.cache_ttl = max(10.0, float(int(ttl_raw)))
+            self.support_api_cache_ttl = max(10.0, float(int(ttl_raw))) if ttl_raw.isdigit() else 120.0
+
+            self.remnawave_enabled = _as_bool(values.get("remnawave_enabled"), bool(getattr(self.config, "remnawave_enabled", False)))
+            self.remnawave_url = (values.get("remnawave_url") or getattr(self.config, "remnawave_url", "") or "").strip().rstrip("/")
+            self.remnawave_api_key = (values.get("remnawave_api_key") or getattr(self.config, "remnawave_api_key", "") or "").strip()
+            self.remnawave_secret_key = (values.get("remnawave_secret_key") or getattr(self.config, "remnawave_secret_key", "") or "").strip()
+            self.remnawave_auth_type = (values.get("remnawave_auth_type") or getattr(self.config, "remnawave_auth_type", "") or "api_key").strip().lower()
+            self.remnawave_username = (values.get("remnawave_username") or getattr(self.config, "remnawave_username", "") or "").strip()
+            self.remnawave_password = (values.get("remnawave_password") or getattr(self.config, "remnawave_password", "") or "").strip()
+            self.remnawave_caddy_token = (values.get("remnawave_caddy_token") or getattr(self.config, "remnawave_caddy_token", "") or "").strip()
+            remna_ttl_raw = (values.get("remnawave_cache_ttl") or "").strip()
+            self.remnawave_cache_ttl = max(10.0, float(int(remna_ttl_raw))) if remna_ttl_raw.isdigit() else 120.0
+
+            active_raw = self._normalize_channel(values.get("integration_active_channel") or getattr(self.config, "integration_active_channel", ""))
+            if active_raw != "none":
+                self.active_channel = active_raw
+            elif self.support_api_enabled:
+                self.active_channel = "support_api"
+            elif self.remnawave_enabled:
+                self.active_channel = "remnawave"
+            else:
+                self.active_channel = "none"
+
+            self._provide_ai_context = _as_bool(
+                values.get("integration_provide_ai_context"),
+                INTEGRATION_CONTEXT_DEFAULTS["provide_ai_context"],
+            )
+            self._provide_manager_card = _as_bool(
+                values.get("integration_provide_manager_card"),
+                INTEGRATION_CONTEXT_DEFAULTS["provide_manager_card"],
+            )
+            for name, default in INTEGRATION_FEATURE_DEFAULTS.items():
+                self._feature_flags[name] = _as_bool(values.get(f"integration_feature_{name}"), default)
+
+            for name, default in INTEGRATION_TOOL_DEFAULTS.items():
+                self._tool_flags[name] = _as_bool(values.get(f"integration_tool_{name}"), default)
 
             self._settings_ts = now
         except Exception as e:
-            logger.warning(f"Support API: ошибка чтения настроек: {e}")
+            logger.warning(f"Integration settings read error: {e}")
             self._settings_ts = now
 
     def invalidate_cache(self):
-        """Сбросить кеш настроек и данных (при изменении настроек в панели)"""
         self._settings_ts = 0.0
         self._user_cache.clear()
 
-    def is_configured(self) -> bool:
-        return bool(self.enabled and self.base_url and self.token)
+    def _remnawave_auth_ready(self) -> bool:
+        if not self.remnawave_url:
+            return False
+        if self.remnawave_auth_type == "basic":
+            return bool(self.remnawave_username and self.remnawave_password)
+        if self.remnawave_auth_type == "caddy":
+            return bool(self.remnawave_caddy_token or self.remnawave_api_key)
+        return bool(self.remnawave_api_key)
 
-    async def get_user_info(self, telegram_id: int, force: bool = False) -> Optional[Dict]:
-        """Получить данные пользователя из Support API (с кешем).
-        Возвращает dict ответа при ok=true, иначе None."""
+    def is_configured(self, channel: Optional[str] = None) -> bool:
+        channel = self._normalize_channel(channel or self.active_channel)
+        if channel == "support_api":
+            return bool(self.support_api_url and self.support_api_token)
+        if channel == "remnawave":
+            return bool(self._remnawave_auth_ready())
+        return False
+
+    def tool_enabled(self, name: str, channel: Optional[str] = None) -> bool:
+        channel = self._normalize_channel(channel or self.active_channel)
+        if name == "get_subscription_info" and not self.feature_enabled("subscription_profile"):
+            return False
+        return (
+            self.is_configured(channel)
+            and name in INTEGRATION_CHANNEL_TOOL_SUPPORT.get(channel, set())
+            and bool(self._tool_flags.get(name, False))
+        )
+
+    def feature_enabled(self, name: str) -> bool:
+        return bool(self._feature_flags.get(name, False))
+
+    def get_enabled_tools(self, channel: Optional[str] = None) -> List[str]:
+        channel = self._normalize_channel(channel or self.active_channel)
+        return [name for name in INTEGRATION_TOOL_META.keys() if self.tool_enabled(name, channel)]
+
+    def channel_capabilities(self) -> Dict[str, Dict[str, bool]]:
+        return {
+            channel: {name: name in supported for name in INTEGRATION_TOOL_META.keys()}
+            for channel, supported in INTEGRATION_CHANNEL_TOOL_SUPPORT.items()
+        }
+
+    def _remnawave_api(self) -> RemnawaveAPI:
+        return RemnawaveAPI(
+            base_url=self.remnawave_url,
+            api_key=self.remnawave_api_key,
+            secret_key=self.remnawave_secret_key,
+            username=self.remnawave_username,
+            password=self.remnawave_password,
+            caddy_token=self.remnawave_caddy_token,
+            auth_type=self.remnawave_auth_type,
+        )
+
+    async def _support_api_post(self, path: str, payload: Dict) -> Optional[Dict]:
         await self._refresh_settings()
-        if not self.is_configured():
+        if not self.is_configured("support_api"):
             return None
-
-        now = time.monotonic()
-        if not force:
-            cached = self._user_cache.get(telegram_id)
-            if cached and now - cached[0] < self.cache_ttl:
-                return cached[1]
-
-        url = f"{self.base_url}/api/support/user_info"
+        url = f"{self.support_api_url}{path}"
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     url,
                     headers={
                         "Content-Type": "application/json",
-                        "Authorization": f"Bearer {self.token}",
-                    },
-                    json={"user_id": int(telegram_id)},
-                    timeout=10.0,
-                )
-            if resp.status_code != 200:
-                logger.warning(f"Support API: HTTP {resp.status_code} для user {telegram_id}")
-                return None
-            data = resp.json()
-            if not data.get("ok"):
-                # user_not_found - нормальная ситуация (юзер не зарегистрирован),
-                # кешируем отрицательный результат чтобы не долбить API
-                if data.get("error") == "user_not_found":
-                    self._user_cache[telegram_id] = (now, None)
-                else:
-                    logger.warning(f"Support API error: {data.get('error')}")
-                return None
-            self._user_cache[telegram_id] = (now, data)
-            # Не даем кешу расти бесконечно
-            if len(self._user_cache) > 2000:
-                oldest = sorted(self._user_cache.items(), key=lambda kv: kv[1][0])[:1000]
-                for k, _ in oldest:
-                    self._user_cache.pop(k, None)
-            return data
-        except httpx.TimeoutException:
-            logger.warning(f"Support API: таймаут для user {telegram_id}")
-            return None
-        except Exception as e:
-            logger.warning(f"Support API: ошибка запроса для user {telegram_id}: {e}")
-            return None
-
-    async def get_ai_context(self, telegram_id: int) -> Optional[str]:
-        """Компактный текст о аккаунте пользователя для AI-контекста"""
-        data = await self.get_user_info(telegram_id)
-        if not data:
-            return None
-        return self.format_for_ai(data)
-
-    # ------------------------------------------------------------------
-    # Action-эндпоинты Support API: платежи, подписки, устройства
-    # ------------------------------------------------------------------
-
-    async def _post(self, path: str, payload: Dict) -> Optional[Dict]:
-        """Общий POST-запрос к Support API. Возвращает данные при ok=true, иначе None."""
-        await self._refresh_settings()
-        if not self.is_configured():
-            return None
-        url = f"{self.base_url}{path}"
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    url,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {self.token}",
+                        "Authorization": f"Bearer {self.support_api_token}",
                     },
                     json=payload,
                     timeout=15.0,
@@ -215,76 +360,398 @@ class UserInfoService:
             logger.warning(f"Support API: ошибка запроса {path}: {e}")
             return None
 
+    def _prune_cache(self):
+        if len(self._user_cache) <= 2000:
+            return
+        oldest = sorted(self._user_cache.items(), key=lambda kv: kv[1][0])[:1000]
+        for key, _ in oldest:
+            self._user_cache.pop(key, None)
+
+    def _apply_exposure_permissions(self, data: Optional[Dict]) -> Optional[Dict]:
+        if not data:
+            return data
+        if (data.get("channel") or self.active_channel) != "remnawave":
+            return data
+        if self.feature_enabled("subscription_profile"):
+            return data
+        result = dict(data)
+        result["summary"] = dict(result.get("summary") or {})
+        result["summary"]["remna_subscriptions_count"] = 0
+        result["summary"]["active_remna_subscriptions_count"] = 0
+        connections = dict(result.get("connections") or {})
+        connections["remna_subscriptions"] = []
+        connections["accessible_nodes"] = []
+        result["connections"] = connections
+        return result
+
+    async def _get_support_api_user_info(self, telegram_id: int, force: bool = False) -> Optional[Dict]:
+        now = time.monotonic()
+        key = self._cache_key("support_api", telegram_id)
+        if not force:
+            cached = self._user_cache.get(key)
+            if cached and now - cached[0] < self.support_api_cache_ttl:
+                return cached[1]
+        url = f"{self.support_api_url}/api/support/user_info"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    url,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.support_api_token}",
+                    },
+                    json={"user_id": int(telegram_id)},
+                    timeout=10.0,
+                )
+            if resp.status_code != 200:
+                logger.warning(f"Support API: HTTP {resp.status_code} для user {telegram_id}")
+                return None
+            data = resp.json()
+            if not data.get("ok"):
+                if data.get("error") == "user_not_found":
+                    self._user_cache[key] = (now, None)
+                else:
+                    logger.warning(f"Support API error: {data.get('error')}")
+                return None
+            data["channel"] = "support_api"
+            self._user_cache[key] = (now, data)
+            self._prune_cache()
+            return data
+        except httpx.TimeoutException:
+            logger.warning(f"Support API: таймаут для user {telegram_id}")
+            return None
+        except Exception as e:
+            logger.warning(f"Support API: ошибка запроса для user {telegram_id}: {e}")
+            return None
+
+    def _remna_status_label(self, user: Dict) -> str:
+        return str(user.get("status") or "").strip().upper() or "UNKNOWN"
+
+    def _remna_tariff_label(self, user: Dict) -> str:
+        squads = user.get("activeInternalSquads") or []
+        squad_name = next((s.get("name") for s in squads if s.get("name")), None)
+        return squad_name or user.get("tag") or user.get("description") or user.get("username") or "Remnawave"
+
+    def _remna_is_active(self, user: Dict) -> bool:
+        status = self._remna_status_label(user)
+        expire_at = _parse_dt(user.get("expireAt"))
+        if status != "ACTIVE":
+            return False
+        if expire_at and expire_at < datetime.now(timezone.utc):
+            return False
+        return True
+
+    async def _build_remnawave_account(self, api: RemnawaveAPI, telegram_id: int, users: List[Dict]) -> Dict:
+        subscriptions = []
+        accessible_nodes = []
+        now = datetime.now(timezone.utc)
+        created_dates = []
+        active_count = 0
+        for user in users:
+            user_uuid = str(user.get("uuid") or user.get("id") or "")
+            short_uuid = str(user.get("shortUuid") or "")
+            created_at = _parse_dt(user.get("createdAt"))
+            if created_at:
+                created_dates.append(created_at)
+            traffic = user.get("userTraffic") or {}
+            is_active = self._remna_is_active(user)
+            if is_active:
+                active_count += 1
+            subscription_info = {}
+            links = {}
+            nodes = []
+            if short_uuid:
+                try:
+                    subscription_info = await api.get_subscription_info(short_uuid)
+                except Exception as e:
+                    logger.debug(f"Remnawave subscription info failed for {short_uuid}: {e}")
+                try:
+                    links = await api.get_subscription_links(short_uuid)
+                except Exception:
+                    links = {}
+            if user_uuid:
+                try:
+                    nodes = await api.get_user_accessible_nodes(user_uuid)
+                except Exception as e:
+                    logger.debug(f"Remnawave accessible nodes failed for {user_uuid}: {e}")
+            subscriptions.append(
+                {
+                    "id": user.get("id") or user_uuid or short_uuid,
+                    "uuid": user_uuid or None,
+                    "short_id": short_uuid or None,
+                    "username": user.get("username"),
+                    "tarif": self._remna_tariff_label(user),
+                    "status": self._remna_status_label(user),
+                    "status_label": self._remna_status_label(user),
+                    "expire_at": _to_iso(user.get("expireAt")),
+                    "traffic_limit_bytes": int(user.get("trafficLimitBytes") or 0),
+                    "traffic_used_bytes": int(traffic.get("usedTrafficBytes") or 0),
+                    "lifetime_used_traffic_bytes": int(traffic.get("lifetimeUsedTrafficBytes") or 0),
+                    "device_limit": user.get("hwidDeviceLimit"),
+                    "is_currently_active": is_active,
+                    "subscription_url": user.get("subscriptionUrl") or subscription_info.get("subscriptionUrl"),
+                    "happ_link": user.get("happLink") or subscription_info.get("happLink"),
+                    "happ_crypto_link": user.get("happCryptoLink") or subscription_info.get("happCryptoLink"),
+                    "links": links,
+                    "online_at": _to_iso(traffic.get("onlineAt")),
+                    "first_connected_at": _to_iso(traffic.get("firstConnectedAt")),
+                    "last_connected_node_uuid": traffic.get("lastConnectedNodeUuid"),
+                    "accessible_nodes_count": len(nodes),
+                }
+            )
+            for node in nodes:
+                accessible_nodes.append(
+                    {
+                        "subscription_username": user.get("username"),
+                        "subscription_short_id": short_uuid or None,
+                        "node_name": node.get("nodeName"),
+                        "country_code": node.get("countryCode"),
+                        "config_profile_name": node.get("configProfileName"),
+                        "active_inbounds": node.get("activeInbounds") or [],
+                    }
+                )
+
+        earliest_created = min(created_dates).isoformat() if created_dates else None
+        disabled_count = sum(1 for user in users if self._remna_status_label(user) == "DISABLED")
+        expired_count = sum(1 for user in users if _parse_dt(user.get("expireAt")) and _parse_dt(user.get("expireAt")) < now)
+        return {
+            "channel": "remnawave",
+            "user": {
+                "telegram_id": telegram_id,
+                "created": earliest_created,
+                "balance": None,
+                "blocked": disabled_count == len(users) and len(users) > 0,
+                "trial_available": None,
+            },
+            "summary": {
+                "remna_subscriptions_count": len(subscriptions),
+                "active_remna_subscriptions_count": active_count,
+                "disabled_subscriptions_count": disabled_count,
+                "expired_subscriptions_count": expired_count,
+            },
+            "connections": {
+                "remna_subscriptions": subscriptions,
+                "outline_keys": [],
+                "xray_keys": [],
+                "accessible_nodes": accessible_nodes,
+            },
+            "transactions": [],
+            "actions": [],
+        }
+
+    async def _get_remnawave_user_info(self, telegram_id: int, force: bool = False) -> Optional[Dict]:
+        now = time.monotonic()
+        key = self._cache_key("remnawave", telegram_id)
+        if not force:
+            cached = self._user_cache.get(key)
+            if cached and now - cached[0] < self.remnawave_cache_ttl:
+                return cached[1]
+        try:
+            async with self._remnawave_api() as api:
+                users = await api.get_user_by_telegram_id(int(telegram_id))
+                if not users:
+                    self._user_cache[key] = (now, None)
+                    return None
+                data = await self._build_remnawave_account(api, int(telegram_id), users)
+                self._user_cache[key] = (now, data)
+                self._prune_cache()
+                return data
+        except RemnawaveAPIError as e:
+            logger.warning(f"Remnawave API error for user {telegram_id}: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Remnawave request failed for user {telegram_id}: {e}")
+            return None
+
+    async def get_user_info(self, telegram_id: int, force: bool = False) -> Optional[Dict]:
+        await self._refresh_settings()
+        if not self.is_configured():
+            return None
+        if self.active_channel == "support_api":
+            data = await self._get_support_api_user_info(telegram_id, force=force)
+            return self._apply_exposure_permissions(data)
+        if self.active_channel == "remnawave":
+            data = await self._get_remnawave_user_info(telegram_id, force=force)
+            return self._apply_exposure_permissions(data)
+        return None
+
+    async def get_ai_context(self, telegram_id: int) -> Optional[str]:
+        if not self._provide_ai_context:
+            return None
+        data = await self.get_user_info(telegram_id)
+        if not data:
+            return None
+        return self.format_for_ai(data)
+
     async def check_payment(self, transaction_id: str, owner_telegram_id: int) -> Optional[Dict]:
-        """Проверить платёж по ID транзакции. Возвращает данные, ТОЛЬКО если транзакция
-        принадлежит owner_telegram_id — иначе None (защита от подбора чужих ID)."""
-        data = await self._post("/api/support/payment/check", {"transaction_id": transaction_id})
+        await self._refresh_settings()
+        if self.active_channel != "support_api" or not self.tool_enabled("check_payment", "support_api"):
+            return None
+        data = await self._support_api_post("/api/support/payment/check", {"transaction_id": transaction_id})
         if not data or not data.get("ok"):
             return None
         owner = (data.get("user") or {}).get("telegram_id")
         if owner is not None and int(owner) != int(owner_telegram_id):
-            logger.warning(f"Support API: попытка получить чужую транзакцию {transaction_id} (owner={owner}, requester={owner_telegram_id})")
+            logger.warning(
+                f"Support API: попытка получить чужую транзакцию {transaction_id} (owner={owner}, requester={owner_telegram_id})"
+            )
             return None
         return data
 
     async def get_own_subscriptions(self, telegram_id: int) -> List[Dict]:
-        """Подписки, реально принадлежащие этому telegram_id (из кешированного user_info)"""
-        data = await self.get_user_info(telegram_id)
+        if self.active_channel == "remnawave" and not self.feature_enabled("subscription_profile"):
+            data = await self._get_remnawave_user_info(telegram_id, force=True)
+        else:
+            data = await self.get_user_info(telegram_id)
         if not data:
             return []
         return (data.get("connections") or {}).get("remna_subscriptions") or []
 
     async def find_own_subscription(
-        self, telegram_id: int, username: Optional[str] = None, short_id: Optional[str] = None
+        self,
+        telegram_id: int,
+        username: Optional[str] = None,
+        short_id: Optional[str] = None,
     ) -> Optional[Dict]:
-        """Найти подписку среди СОБСТВЕННЫХ подписок клиента по username/short_id.
-        Это единственная точка проверки владения перед разрушающими действиями —
-        никогда не доверяем идентификатору, который AI взял из текста/аргументов,
-        без сверки с реальным списком подписок этого telegram_id."""
         subs = await self.get_own_subscriptions(telegram_id)
-        for s in subs:
-            if username and s.get("username") == username:
-                return s
-            if short_id and s.get("short_id") == short_id:
-                return s
+        for sub in subs:
+            if username and sub.get("username") == username:
+                return sub
+            if short_id and sub.get("short_id") == short_id:
+                return sub
         return None
 
     async def get_subscription_info(self, username: Optional[str] = None, short_id: Optional[str] = None) -> Optional[Dict]:
-        """Read-only: подробная информация о подписке (для чтения не требует владения —
-        вызывающий код обязан сам сверить username/short_id со списком своих подписок,
-        когда данные идут клиенту)"""
-        payload = {"username": username} if username else {"short_id": short_id}
-        return await self._post("/api/support/subscription_info", payload)
+        await self._refresh_settings()
+        if not self.tool_enabled("get_subscription_info"):
+            return None
+        if self.active_channel == "support_api":
+            payload = {"username": username} if username else {"short_id": short_id}
+            return await self._support_api_post("/api/support/subscription_info", payload)
+        if self.active_channel != "remnawave":
+            return None
+        try:
+            async with self._remnawave_api() as api:
+                user = None
+                if username:
+                    user = await api.get_user_by_username(username)
+                elif short_id:
+                    user = await api.get_user_by_short_uuid(short_id)
+                if not user:
+                    return None
+                user_uuid = str(user.get("uuid") or user.get("id") or "")
+                user_short_id = str(user.get("shortUuid") or short_id or "")
+                info = await api.get_subscription_info(user_short_id) if user_short_id else {}
+                nodes = await api.get_user_accessible_nodes(user_uuid) if user_uuid else []
+                subscription = await self._build_remnawave_account(api, int(user.get("telegramId") or 0), [user])
+                sub = ((subscription.get("connections") or {}).get("remna_subscriptions") or [{}])[0]
+                return {
+                    "ok": True,
+                    "channel": "remnawave",
+                    "subscription": sub,
+                    "links": info.get("links") or sub.get("links") or {},
+                    "subscription_url": info.get("subscriptionUrl") or sub.get("subscription_url"),
+                    "happ": info.get("happ"),
+                    "accessible_nodes": nodes,
+                }
+        except Exception as e:
+            logger.warning(f"Remnawave subscription info failed: {e}")
+            return None
+        return None
 
     async def get_subscription_devices(self, username: str) -> Optional[Dict]:
-        return await self._post("/api/support/subscription/devices", {"username": username})
+        await self._refresh_settings()
+        if not self.tool_enabled("get_subscription_devices"):
+            return None
+        if self.active_channel == "support_api":
+            return await self._support_api_post("/api/support/subscription/devices", {"username": username})
+        if self.active_channel != "remnawave":
+            return None
+        try:
+            async with self._remnawave_api() as api:
+                user = await api.get_user_by_username(username)
+                if not user:
+                    return None
+                devices = await api.get_user_devices_all(str(user.get("uuid") or user.get("id") or ""))
+                return {
+                    "ok": True,
+                    "channel": "remnawave",
+                    "subscription_username": username,
+                    "total": devices.get("total") or 0,
+                    "devices": devices.get("devices") or [],
+                }
+        except Exception as e:
+            logger.warning(f"Remnawave devices failed: {e}")
+            return None
 
     async def delete_device(self, username: str, hwid: str) -> Optional[Dict]:
-        """Разрушающее действие — вызывать только после подтверждения клиента
-        и проверки владения через find_own_subscription"""
-        return await self._post("/api/support/subscription/device/delete", {"username": username, "hwid": hwid})
+        await self._refresh_settings()
+        if not self.tool_enabled("delete_device"):
+            return None
+        if self.active_channel == "support_api":
+            return await self._support_api_post("/api/support/subscription/device/delete", {"username": username, "hwid": hwid})
+        if self.active_channel != "remnawave":
+            return None
+        try:
+            async with self._remnawave_api() as api:
+                user = await api.get_user_by_username(username)
+                if not user:
+                    return {"ok": False, "error": "user_not_found"}
+                ok = await api.remove_device(str(user.get("uuid") or user.get("id") or ""), hwid)
+                return {"ok": ok}
+        except Exception as e:
+            logger.warning(f"Remnawave delete device failed: {e}")
+            return {"ok": False}
 
     async def reset_devices(self, short_id: str) -> Optional[Dict]:
-        """Разрушающее действие — вызывать только после подтверждения клиента
-        и проверки владения через find_own_subscription"""
-        return await self._post("/api/support/subscription/devices/reset", {"short_id": short_id})
+        await self._refresh_settings()
+        if not self.tool_enabled("reset_devices"):
+            return None
+        if self.active_channel == "support_api":
+            return await self._support_api_post("/api/support/subscription/devices/reset", {"short_id": short_id})
+        if self.active_channel != "remnawave":
+            return None
+        try:
+            async with self._remnawave_api() as api:
+                user = await api.get_user_by_short_uuid(short_id)
+                if not user:
+                    return {"ok": False, "error": "user_not_found"}
+                ok = await api.reset_user_devices(str(user.get("uuid") or user.get("id") or ""))
+                return {"ok": ok}
+        except Exception as e:
+            logger.warning(f"Remnawave reset devices failed: {e}")
+            return {"ok": False}
 
     async def revoke_subscription(self, username: str) -> Optional[Dict]:
-        """Разрушающее действие (перевыпуск подписки) — вызывать только после
-        подтверждения клиента и проверки владения через find_own_subscription"""
-        return await self._post("/api/support/subscription/revoke", {"username": username})
+        await self._refresh_settings()
+        if not self.tool_enabled("revoke_subscription"):
+            return None
+        if self.active_channel == "support_api":
+            return await self._support_api_post("/api/support/subscription/revoke", {"username": username})
+        if self.active_channel != "remnawave":
+            return None
+        try:
+            async with self._remnawave_api() as api:
+                user = await api.get_user_by_username(username)
+                if not user:
+                    return {"ok": False, "error": "user_not_found"}
+                updated = await api.revoke_user_subscription(str(user.get("uuid") or user.get("id") or ""))
+                new_short_id = str(updated.get("shortUuid") or user.get("shortUuid") or "")
+                links = await api.get_subscription_links(new_short_id) if new_short_id else {}
+                return {
+                    "ok": True,
+                    "short_id": new_short_id or None,
+                    "subscription_url": updated.get("subscriptionUrl"),
+                    "links": links,
+                }
+        except Exception as e:
+            logger.warning(f"Remnawave revoke subscription failed: {e}")
+            return {"ok": False}
 
-    # ------------------------------------------------------------------
-    # Форматирование
-    # ------------------------------------------------------------------
-
-    def format_for_ai(self, data: Dict) -> str:
-        """Текст для системного промпта AI: только то, что помогает отвечать,
-        компактно, чтобы не раздувать токены"""
+    def _format_support_api_for_ai(self, data: Dict) -> str:
         user = data.get("user") or {}
         summary = data.get("summary") or {}
         conn = data.get("connections") or {}
-
         parts: List[str] = []
         parts.append("ДАННЫЕ АККАУНТА ПОЛЬЗОВАТЕЛЯ (из системы сервиса, актуальные):")
         parts.append(f"- Баланс: {user.get('balance', '0')} руб.")
@@ -292,11 +759,12 @@ class UserInfoService:
             parts.append("- ⚠️ Аккаунт ЗАБЛОКИРОВАН")
         parts.append(f"- Пробный период доступен: {'да' if user.get('trial_available') else 'нет'}")
         parts.append(f"- Дата регистрации: {_fmt_date(user.get('created'))}")
-
         subs = conn.get("remna_subscriptions") or []
         active_subs = [s for s in subs if s.get("is_currently_active")]
         inactive_count = len(subs) - len(active_subs)
-        parts.append(f"- Подписок: всего {summary.get('remna_subscriptions_count', len(subs))}, активных {summary.get('active_remna_subscriptions_count', len(active_subs))}")
+        parts.append(
+            f"- Подписок: всего {summary.get('remna_subscriptions_count', len(subs))}, активных {summary.get('active_remna_subscriptions_count', len(active_subs))}"
+        )
         for s in active_subs[:6]:
             limit = s.get("traffic_limit_bytes") or 0
             traffic = f"{_fmt_gb(s.get('traffic_used_bytes'))} ГБ из {'безлимит' if not limit else _fmt_gb(limit) + ' ГБ'}"
@@ -306,52 +774,98 @@ class UserInfoService:
             if s.get("device_limit"):
                 extras.append(f"устройств: {s['device_limit']}")
             extra_txt = f" ({', '.join(extras)})" if extras else ""
-            parts.append(
-                f"  • «{s.get('tarif', '?')}» до {_fmt_date(s.get('expire_at'))}, трафик {traffic}{extra_txt}"
-            )
+            parts.append(f"  • «{s.get('tarif', '?')}» до {_fmt_date(s.get('expire_at'))}, трафик {traffic}{extra_txt}")
         if len(active_subs) > 6:
             parts.append(f"  • ... и еще {len(active_subs) - 6} активных подписок")
         if inactive_count > 0:
             parts.append(f"  • неактивных/истекших: {inactive_count}")
-
         outline = conn.get("outline_keys") or []
         if outline:
             names = ", ".join(k.get("profile_name", "?") for k in outline[:5])
             more = f" и еще {len(outline) - 5}" if len(outline) > 5 else ""
             parts.append(f"- Outline-ключей: {len(outline)} ({names}{more})")
-
         xray = conn.get("xray_keys") or []
         if xray:
             valid = sum(1 for k in xray if k.get("is_valid"))
             parts.append(f"- Xray-ключей: {len(xray)} (рабочих: {valid})")
             for k in xray[:5]:
                 parts.append(f"  • «{k.get('name', '?')}» сервер {k.get('server', '?')}, {'работает' if k.get('is_valid') else 'НЕ работает'}")
-
         txs = data.get("transactions") or []
         if txs:
             parts.append("- Последние платежи:")
             for t in txs[:3]:
                 status = "✅ оплачен" if t.get("status") else "⏳ не оплачен"
                 parts.append(f"  • {t.get('summa', '?')} руб. через {t.get('method_label') or t.get('method', '?')}, {status}, {_fmt_datetime(t.get('created'))}")
-
         acts = data.get("actions") or []
         if acts:
             parts.append("- Последние действия по балансу:")
             for a in acts[:3]:
-                parts.append(f"  • {a.get('action_label') or a.get('action', '?')}: {a.get('amount', '?')} руб. ({_fmt_datetime(a.get('created_at'))}), баланс {a.get('balance_before', '?')} → {a.get('balance_after', '?')}")
-
+                parts.append(
+                    f"  • {a.get('action_label') or a.get('action', '?')}: {a.get('amount', '?')} руб. ({_fmt_datetime(a.get('created_at'))}), баланс {a.get('balance_before', '?')} → {a.get('balance_after', '?')}"
+                )
         parts.append(
-            "Используй эти данные для точных ответов о балансе, подписках и ключах пользователя. "
-            "Не выдумывай данные, которых здесь нет. Не раскрывай технические ID и short_id без необходимости."
+            "Используй эти данные для точных ответов о балансе, подписках и ключах пользователя. Не выдумывай данные, которых здесь нет."
         )
         return "\n".join(parts)
 
-    def format_for_manager(self, data: Dict) -> str:
-        """Карточка клиента для менеджера (топик группы / личное уведомление / веб-панель)"""
+    def _format_remnawave_for_ai(self, data: Dict) -> str:
         user = data.get("user") or {}
         summary = data.get("summary") or {}
         conn = data.get("connections") or {}
+        subs = conn.get("remna_subscriptions") or []
+        nodes = conn.get("accessible_nodes") or []
+        parts: List[str] = []
+        parts.append("ДАННЫЕ АККАУНТА ПОЛЬЗОВАТЕЛЯ (Remnawave, актуальные):")
+        parts.append("- Баланс и платежи в этом канале недоступны.")
+        parts.append(f"- Telegram ID: {user.get('telegram_id', '—')}")
+        parts.append(f"- Первая найденная регистрация: {_fmt_date(user.get('created'))}")
+        if user.get("blocked"):
+            parts.append("- ⚠️ Все найденные подписки клиента сейчас отключены.")
+        parts.append(
+            f"- Подписок: всего {summary.get('remna_subscriptions_count', len(subs))}, активных {summary.get('active_remna_subscriptions_count', 0)}"
+        )
+        for sub in subs[:8]:
+            limit = sub.get("traffic_limit_bytes") or 0
+            traffic = f"{_fmt_gb(sub.get('traffic_used_bytes'))} ГБ из {'безлимит' if not limit else _fmt_gb(limit) + ' ГБ'}"
+            extra = []
+            if sub.get("device_limit"):
+                extra.append(f"лимит устройств: {sub['device_limit']}")
+            if sub.get("online_at"):
+                extra.append(f"онлайн: {_fmt_datetime(sub.get('online_at'))}")
+            if sub.get("accessible_nodes_count"):
+                extra.append(f"доступных нод: {sub.get('accessible_nodes_count')}")
+            extra_txt = f" ({', '.join(extra)})" if extra else ""
+            parts.append(
+                f"  • «{sub.get('tarif') or sub.get('username') or '?'}» / username {sub.get('username', '?')} / short_id {sub.get('short_id', '?')}: "
+                f"статус {sub.get('status_label', '?')}, до {_fmt_date(sub.get('expire_at'))}, трафик {traffic}{extra_txt}"
+            )
+        if len(subs) > 8:
+            parts.append(f"  • ... и ещё {len(subs) - 8} подписок")
+        if nodes:
+            parts.append("- Доступные подключения/ноды:")
+            seen = 0
+            for node in nodes[:8]:
+                seen += 1
+                label = node.get("config_profile_name") or node.get("node_name") or "node"
+                country = node.get("country_code") or "—"
+                parts.append(f"  • {node.get('subscription_username', '?')}: {label} ({country})")
+            if len(nodes) > seen:
+                parts.append(f"  • ... и ещё {len(nodes) - seen} вариантов подключения")
+        parts.append(
+            "Если нужны устройства, конкретные ссылки подписки или управляющее действие, используй доступные инструменты и не выдумывай то, чего нет в контексте."
+        )
+        return "\n".join(parts)
 
+    def format_for_ai(self, data: Dict) -> str:
+        channel = data.get("channel") or self.active_channel
+        if channel == "remnawave":
+            return self._format_remnawave_for_ai(data)
+        return self._format_support_api_for_ai(data)
+
+    def _format_support_api_for_manager(self, data: Dict) -> str:
+        user = data.get("user") or {}
+        summary = data.get("summary") or {}
+        conn = data.get("connections") or {}
         parts: List[str] = []
         parts.append("👤 Карточка клиента:")
         name = user.get("first_name") or "—"
@@ -359,7 +873,6 @@ class UserInfoService:
         parts.append(f"• {name} ({uname}), TG ID: {user.get('telegram_id', '?')}")
         parts.append(f"• Баланс: {user.get('balance', '0')} руб." + (" | 🚫 ЗАБЛОКИРОВАН" if user.get("blocked") else ""))
         parts.append(f"• Регистрация: {_fmt_date(user.get('created'))} | Триал доступен: {'да' if user.get('trial_available') else 'нет'}")
-
         subs = conn.get("remna_subscriptions") or []
         active_subs = [s for s in subs if s.get("is_currently_active")]
         parts.append(
@@ -371,16 +884,55 @@ class UserInfoService:
             parts.append(f"   – «{s.get('tarif', '?')}» до {_fmt_date(s.get('expire_at'))}, {traffic}")
         if len(active_subs) > 4:
             parts.append(f"   – ... еще {len(active_subs) - 4}")
-
         outline_n = summary.get("outline_keys_count", len(conn.get("outline_keys") or []))
         xray = conn.get("xray_keys") or []
         xray_valid = summary.get("valid_xray_keys_count", sum(1 for k in xray if k.get("is_valid")))
         parts.append(f"• Ключи: Outline {outline_n} шт., Xray {len(xray)} шт. (рабочих {xray_valid})")
-
         txs = data.get("transactions") or []
         if txs:
             t = txs[0]
             status = "оплачен" if t.get("status") else "НЕ оплачен"
             parts.append(f"• Последний платеж: {t.get('summa', '?')} руб. ({t.get('method_label') or t.get('method', '?')}), {status}, {_fmt_datetime(t.get('created'))}")
-
         return "\n".join(parts)
+
+    def _format_remnawave_for_manager(self, data: Dict) -> str:
+        user = data.get("user") or {}
+        summary = data.get("summary") or {}
+        conn = data.get("connections") or {}
+        subs = conn.get("remna_subscriptions") or []
+        nodes = conn.get("accessible_nodes") or []
+        parts: List[str] = []
+        parts.append("👤 Карточка клиента:")
+        parts.append(f"• TG ID: {user.get('telegram_id', '?')}")
+        parts.append(f"• Первая найденная регистрация: {_fmt_date(user.get('created'))}")
+        if user.get("blocked"):
+            parts.append("• 🚫 Все найденные подписки клиента отключены")
+        parts.append(
+            f"• Подписки: {summary.get('active_remna_subscriptions_count', 0)} актив. из {summary.get('remna_subscriptions_count', len(subs))}"
+        )
+        for sub in subs[:4]:
+            limit = sub.get("traffic_limit_bytes") or 0
+            traffic = f"{_fmt_gb(sub.get('traffic_used_bytes'))}/{'∞' if not limit else _fmt_gb(limit)} ГБ"
+            links_mark = "есть ссылка" if sub.get("subscription_url") else "без ссылки"
+            parts.append(
+                f"   – {sub.get('username', '?')} ({sub.get('status_label', '?')}) до {_fmt_date(sub.get('expire_at'))}, {traffic}, {links_mark}"
+            )
+        if len(subs) > 4:
+            parts.append(f"   – ... еще {len(subs) - 4}")
+        if nodes:
+            parts.append("• Подключения / ноды:")
+            for node in nodes[:4]:
+                label = node.get("config_profile_name") or node.get("node_name") or "node"
+                parts.append(f"   – {node.get('subscription_username', '?')}: {label} ({node.get('country_code') or '—'})")
+            if len(nodes) > 4:
+                parts.append(f"   – ... еще {len(nodes) - 4}")
+        parts.append("• Баланс и платежи в этом канале недоступны")
+        return "\n".join(parts)
+
+    def format_for_manager(self, data: Dict) -> str:
+        if not self._provide_manager_card:
+            return ""
+        channel = data.get("channel") or self.active_channel
+        if channel == "remnawave":
+            return self._format_remnawave_for_manager(data)
+        return self._format_support_api_for_manager(data)

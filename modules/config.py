@@ -67,9 +67,18 @@ class Config(BaseSettings):
     telegram_support_group_id: Optional[int] = Field(default=None, alias="TELEGRAM_SUPPORT_GROUP_ID")
     
     # Support API основного сервера (инфо о пользователе по telegram_id)
+    integration_active_channel: str = Field(default="support_api", alias="INTEGRATION_ACTIVE_CHANNEL")
     support_api_enabled: bool = Field(default=False, alias="SUPPORT_API_ENABLED")
     support_api_url: str = Field(default="", alias="SUPPORT_API_URL")
     support_api_token: str = Field(default="", alias="SUPPORT_API_TOKEN")
+    remnawave_enabled: bool = Field(default=False, alias="REMNAWAVE_ENABLED")
+    remnawave_url: str = Field(default="", alias="REMNAWAVE_URL")
+    remnawave_api_key: str = Field(default="", alias="REMNAWAVE_API_KEY")
+    remnawave_secret_key: str = Field(default="", alias="REMNAWAVE_SECRET_KEY")
+    remnawave_auth_type: str = Field(default="api_key", alias="REMNAWAVE_AUTH_TYPE")
+    remnawave_username: str = Field(default="", alias="REMNAWAVE_USERNAME")
+    remnawave_password: str = Field(default="", alias="REMNAWAVE_PASSWORD")
+    remnawave_caddy_token: str = Field(default="", alias="REMNAWAVE_CADDY_TOKEN")
 
     # Project Databases
     project_db_1: Optional[str] = Field(default=None, alias="PROJECT_DB_1")

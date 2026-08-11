@@ -8,20 +8,28 @@
     <div v-if="loading && !data" class="muted" style="font-size: 13px;">Загрузка...</div>
 
     <div v-else-if="error" class="muted" style="font-size: 13px;">
-      <template v-if="error === 'not_configured'">Интеграция Support API не настроена (Настройки → Интеграция и бэкап)</template>
+      <template v-if="error === 'not_configured'">Интеграционный канал не настроен (Настройки → Интеграция и бэкап)</template>
       <template v-else-if="error === 'not_found'">Клиент не найден в системе сервиса</template>
       <template v-else>Не удалось загрузить данные</template>
     </div>
 
     <div v-else-if="data">
       <div class="acc-row">
+        <span class="muted">Канал</span>
+        <span style="font-weight:600;">{{ channelLabel }}</span>
+      </div>
+      <div v-if="hasBalance" class="acc-row">
         <span class="muted">Баланс</span>
         <span style="font-weight:700;">{{ data.user?.balance ?? '—' }} ₽</span>
+      </div>
+      <div v-else class="acc-row">
+        <span class="muted">Баланс / платежи</span>
+        <span>недоступно в этом канале</span>
       </div>
       <div v-if="data.user?.blocked" class="acc-row" style="color:#ef4444;">
         <span>🚫 Аккаунт заблокирован</span>
       </div>
-      <div class="acc-row">
+      <div v-if="hasTrialInfo" class="acc-row">
         <span class="muted">Триал доступен</span>
         <span>{{ data.user?.trial_available ? 'да' : 'нет' }}</span>
       </div>
@@ -41,10 +49,15 @@
         <div class="muted" style="font-size:12px; margin-top:4px;">
           до {{ shortDate(s.expire_at) }} · {{ traffic(s) }}
           <span v-if="s.device_limit"> · устройств: {{ s.device_limit }}</span>
+          <span v-if="s.status_label"> · {{ statusLabel(s.status_label) }}</span>
         </div>
         <div class="acc-key-row">
           <code class="acc-key">{{ s.username || s.short_id }}</code>
           <Button icon="pi pi-copy" text rounded size="small" @click="copy(s.username || s.short_id)" />
+        </div>
+        <div v-if="s.subscription_url" class="acc-key-row">
+          <code class="acc-key">{{ s.subscription_url }}</code>
+          <Button icon="pi pi-copy" text rounded size="small" @click="copy(s.subscription_url)" />
         </div>
       </div>
 
@@ -71,6 +84,17 @@
         <span>{{ t.method_label || t.method }} · {{ shortDateTime(t.created) }}</span>
         <span :style="{ color: t.status ? '#22c55e' : '#f59e0b' }">{{ t.summa }} ₽</span>
       </div>
+
+      <div v-if="nodes.length" class="acc-section-title">Подключения / ноды</div>
+      <div v-for="(n, i) in nodes" :key="'n' + i" class="acc-card">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+          <span style="font-weight:600;">{{ n.subscription_username || 'Подписка' }}</span>
+          <span class="muted">{{ n.country_code || '—' }}</span>
+        </div>
+        <div class="muted" style="font-size:12px; margin-top:4px;">
+          {{ n.config_profile_name || n.node_name || 'Подключение' }}
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -91,6 +115,10 @@ const activeSubs = computed(() => subs.value.filter((s: any) => s.is_currently_a
 const outline = computed(() => data.value?.connections?.outline_keys || [])
 const xray = computed(() => data.value?.connections?.xray_keys || [])
 const txs = computed(() => (data.value?.transactions || []).slice(0, 3))
+const nodes = computed(() => (data.value?.connections?.accessible_nodes || []).slice(0, 8))
+const hasBalance = computed(() => data.value?.user?.balance !== null && data.value?.user?.balance !== undefined)
+const hasTrialInfo = computed(() => data.value?.user?.trial_available !== null && data.value?.user?.trial_available !== undefined)
+const channelLabel = computed(() => data.value?.channel === 'remnawave' ? 'Remnawave v3+' : 'Support API')
 
 function shortDate(iso?: string | null) {
   if (!iso) return '—'
@@ -109,6 +137,15 @@ function traffic(s: any) {
   const limit = Number(s.traffic_limit_bytes || 0)
   const limitStr = limit ? (limit / 1024 ** 3).toFixed(1) + ' ГБ' : '∞'
   return `${used.toFixed(1)}/${limitStr}`
+}
+
+function statusLabel(status?: string | null) {
+  const value = String(status || '').toUpperCase()
+  if (value === 'ACTIVE') return 'активна'
+  if (value === 'DISABLED') return 'отключена'
+  if (value === 'EXPIRED') return 'истекла'
+  if (value === 'LIMITED') return 'ограничена'
+  return value ? value.toLowerCase() : '—'
 }
 
 async function copy(text: string) {

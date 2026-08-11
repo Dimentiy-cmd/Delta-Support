@@ -329,7 +329,12 @@ class AISupport:
         if image_data_url and chat_history:
             chat_history = chat_history[-6:]
 
-        tools_allowed = execute_tools and user_info_service is not None and bool((context or {}).get("user_id"))
+        tools_allowed = (
+            execute_tools
+            and user_info_service is not None
+            and bool((context or {}).get("user_id"))
+            and bool(user_info_service.get_enabled_tools())
+        )
 
         last_error = None
         for provider in self._ai_providers:
@@ -364,6 +369,9 @@ class AISupport:
         ("pending_action", PendingAction) — разрушающее действие подтверждено по владению,
             но не выполнено — ждёт подтверждения клиента"""
         try:
+            if not user_info_service.tool_enabled(name):
+                return ("result", {"ok": False, "error": "инструмент отключен в настройках интеграции"})
+
             if name == "check_payment":
                 tx_id = str(args.get("transaction_id") or "").strip()
                 if not tx_id:
@@ -572,15 +580,17 @@ class AISupport:
 
         # Tool calling — только в живом чате с клиентом (execute_tools=True из bot.py),
         # не для vision-запросов (там своя, урезанная схема сообщений)
-        if execute_tools and not image_data_url:
-            payload["tools"] = _READONLY_TOOLS + _DESTRUCTIVE_TOOLS
+        enabled_tool_names = set(user_info_service.get_enabled_tools()) if user_info_service else set()
+        allowed_tools = [t for t in (_READONLY_TOOLS + _DESTRUCTIVE_TOOLS) if t["function"]["name"] in enabled_tool_names]
+        if execute_tools and not image_data_url and allowed_tools:
+            payload["tools"] = allowed_tools
             payload["tool_choice"] = "auto"
 
         try:
             async with httpx.AsyncClient() as client:
                 response = await self._post_chat_completion(client, url, headers, payload)
 
-                if execute_tools and not image_data_url:
+                if execute_tools and not image_data_url and allowed_tools:
                     message = response["choices"][0]["message"]
                     tool_calls = message.get("tool_calls")
                     if tool_calls:
