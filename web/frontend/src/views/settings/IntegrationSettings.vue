@@ -218,24 +218,16 @@
     </div>
 
     <div class="panel card" style="padding: 16px; border-radius: var(--app-radius); margin-bottom: 16px;">
-      <div style="font-weight: 700; margin-bottom: 4px;">Разрешения и AI tool calling</div>
-      <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
-        Для активного канала можно включать только те действия, которые действительно должны быть доступны AI и менеджерам.
+      <div style="font-weight: 700; margin-bottom: 4px;">Разрешения по каналам</div>
+      <div class="muted" style="font-size: 13px; margin-bottom: 14px;">
+        Общие правила выдачи данных задаются один раз, а AI tools включаются отдельно для каждого канала. При переключении источника используются только его тумблеры.
       </div>
 
-      <div style="display:flex; flex-direction:column; gap:12px; margin-bottom: 16px;">
-        <label class="toggle-row">
-          <div>
-            <div style="font-weight:600;">Подписки, short_id, subscription URL, ссылки и ноды</div>
-            <div class="muted" style="font-size:12px;">Показывать менеджеру и AI данные подписок Remnawave, short_id, ссылки подписки и доступные ноды.</div>
-          </div>
-          <InputSwitch v-model="form.permissions.subscription_profile" />
-        </label>
-
+      <div style="display:flex; flex-direction:column; gap:12px; margin-bottom: 18px;">
         <label class="toggle-row">
           <div>
             <div style="font-weight:600;">Передавать данные в AI-контекст</div>
-            <div class="muted" style="font-size:12px;">AI увидит данные аккаунта клиента в системном контексте.</div>
+            <div class="muted" style="font-size:12px;">AI увидит данные аккаунта клиента в системном контексте и сможет отвечать точнее.</div>
           </div>
           <InputSwitch v-model="form.permissions.provide_ai_context" />
         </label>
@@ -249,21 +241,62 @@
         </label>
       </div>
 
-      <div style="font-weight: 600; margin-bottom: 10px;">Инструменты</div>
-      <div class="tools-list">
-        <div v-for="tool in toolMeta" :key="tool.name" class="tool-row">
-          <div style="min-width:0;">
-            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-              <span style="font-weight:600;">{{ tool.label }}</span>
-              <Tag v-if="tool.destructive" severity="danger" value="Подтверждение клиента" />
-              <Tag v-if="!isToolSupported(tool.name)" severity="secondary" value="Не поддерживается каналом" />
+      <div class="permission-grid">
+        <div class="permission-card">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px;">
+            <div>
+              <div style="font-weight:700;">Support API</div>
+              <div class="muted" style="font-size:12px;">Баланс, платежи, подписки и действия с основного сервера.</div>
             </div>
-            <div class="muted" style="font-size:12px; margin-top:4px;">{{ tool.description }}</div>
+            <Tag :severity="form.active_channel === 'support_api' ? 'success' : 'secondary'" :value="form.active_channel === 'support_api' ? 'Активен' : 'Ожидает'" />
           </div>
-          <InputSwitch
-            v-model="form.permissions.tools[tool.name]"
-            :disabled="form.active_channel === 'none' || !isToolSupported(tool.name)"
-          />
+
+          <div class="tools-list">
+            <div v-for="tool in toolsForChannel('support_api')" :key="'support-' + tool.name" class="tool-row">
+              <div style="min-width:0;">
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <span style="font-weight:600;">{{ tool.label }}</span>
+                  <Tag v-if="tool.destructive" severity="danger" value="Подтверждение клиента" />
+                </div>
+                <div class="muted" style="font-size:12px; margin-top:4px;">{{ tool.description }}</div>
+              </div>
+              <InputSwitch v-model="form.permissions.tools.support_api[tool.name]" />
+            </div>
+          </div>
+        </div>
+
+        <div class="permission-card">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px;">
+            <div>
+              <div style="font-weight:700;">Remnawave v3+</div>
+              <div class="muted" style="font-size:12px;">Подписки, subscription_url, ноды и устройства напрямую из Remnawave.</div>
+            </div>
+            <Tag :severity="form.active_channel === 'remnawave' ? 'success' : 'secondary'" :value="form.active_channel === 'remnawave' ? 'Активен' : 'Ожидает'" />
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:10px; margin-bottom: 14px;">
+            <label v-for="featureName in featuresForChannel('remnawave')" :key="featureName" class="toggle-row">
+              <div>
+                <div style="font-weight:600;">{{ featureMeta[featureName]?.label || featureName }}</div>
+                <div class="muted" style="font-size:12px;">{{ featureMeta[featureName]?.description }}</div>
+              </div>
+              <InputSwitch v-model="form.permissions.features[featureName]" />
+            </label>
+          </div>
+
+          <div style="font-weight: 600; margin-bottom: 10px;">AI tools Remnawave</div>
+          <div class="tools-list">
+            <div v-for="tool in toolsForChannel('remnawave')" :key="'remna-' + tool.name" class="tool-row">
+              <div style="min-width:0;">
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <span style="font-weight:600;">{{ tool.label }}</span>
+                  <Tag v-if="tool.destructive" severity="danger" value="Подтверждение клиента" />
+                </div>
+                <div class="muted" style="font-size:12px; margin-top:4px;">{{ tool.description }}</div>
+              </div>
+              <InputSwitch v-model="form.permissions.tools.remnawave[tool.name]" />
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -344,6 +377,12 @@ type ToolMeta = {
   destructive: boolean
 }
 
+type FeatureMeta = {
+  label: string
+  description: string
+  channels: string[]
+}
+
 const authTypes = [
   { label: 'API key', value: 'api_key' },
   { label: 'Basic', value: 'basic' },
@@ -352,6 +391,7 @@ const authTypes = [
 
 const channels = ref<any[]>([])
 const toolMeta = ref<ToolMeta[]>([])
+const featureMeta = ref<Record<string, FeatureMeta>>({})
 const capabilities = ref<Record<string, Record<string, boolean>>>({})
 
 const form = ref({
@@ -381,10 +421,16 @@ const form = ref({
     caddy_token_preview: ''
   },
   permissions: {
-    subscription_profile: true,
+    features: {
+      subscription_profile: true,
+      subscription_url: true
+    },
     provide_ai_context: true,
     provide_manager_card: true,
-    tools: {} as Record<string, boolean>
+    tools: {
+      support_api: {} as Record<string, boolean>,
+      remnawave: {} as Record<string, boolean>
+    }
   }
 })
 
@@ -415,8 +461,32 @@ const activeChannelLabel = computed(() => {
   return item?.label || 'Без интеграции'
 })
 
-function isToolSupported(name: string) {
-  return Boolean(capabilities.value?.[form.value.active_channel]?.[name])
+function isToolSupportedForChannel(channel: string, name: string) {
+  return Boolean(capabilities.value?.[channel]?.[name])
+}
+
+function toolsForChannel(channel: string) {
+  return toolMeta.value.filter((tool) => isToolSupportedForChannel(channel, tool.name))
+}
+
+function featuresForChannel(channel: string) {
+  const order = ['subscription_url', 'subscription_profile']
+  return Object.entries(featureMeta.value)
+    .filter(([, meta]) => Array.isArray(meta.channels) && meta.channels.includes(channel))
+    .map(([name]) => name)
+    .sort((a, b) => {
+      const aIndex = order.indexOf(a)
+      const bIndex = order.indexOf(b)
+      return (aIndex === -1 ? 999 : aIndex) - (bIndex === -1 ? 999 : bIndex)
+    })
+}
+
+function normalizeTools(channel: 'support_api' | 'remnawave', source: any) {
+  const result: Record<string, boolean> = {}
+  for (const tool of toolMeta.value) {
+    result[tool.name] = source?.[tool.name] !== false
+  }
+  return result
 }
 
 async function load() {
@@ -425,6 +495,7 @@ async function load() {
   const data = await res.json()
   channels.value = data.channels || []
   toolMeta.value = data.tool_meta || []
+  featureMeta.value = data.feature_meta || {}
   capabilities.value = data.capabilities || {}
   form.value.active_channel = data.active_channel || 'none'
   form.value.support_api = {
@@ -451,11 +522,18 @@ async function load() {
     caddy_token_set: !!data.remnawave?.caddy_token_set,
     caddy_token_preview: data.remnawave?.caddy_token_preview || ''
   }
+  const loadedFeatures = data.permissions?.features || {}
   form.value.permissions = {
-    subscription_profile: data.permissions?.subscription_profile !== false,
+    features: {
+      subscription_profile: loadedFeatures.subscription_profile ?? (data.permissions?.subscription_profile !== false),
+      subscription_url: loadedFeatures.subscription_url ?? (data.permissions?.subscription_url !== false)
+    },
     provide_ai_context: data.permissions?.provide_ai_context !== false,
     provide_manager_card: data.permissions?.provide_manager_card !== false,
-    tools: { ...(data.permissions?.tools || {}) }
+    tools: {
+      support_api: normalizeTools('support_api', data.permissions?.tools?.support_api || data.permissions?.tools),
+      remnawave: normalizeTools('remnawave', data.permissions?.tools?.remnawave || data.permissions?.tools)
+    }
   }
 }
 
@@ -480,7 +558,7 @@ function buildPayload(extra: any = {}) {
       ...(extra.remnawave || {})
     },
     permissions: {
-      subscription_profile: form.value.permissions.subscription_profile,
+      features: form.value.permissions.features,
       provide_ai_context: form.value.permissions.provide_ai_context,
       provide_manager_card: form.value.permissions.provide_manager_card,
       tools: form.value.permissions.tools
@@ -659,6 +737,19 @@ onMounted(load)
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
+}
+.permission-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+.permission-card {
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 .toggle-row,
 .tool-row {

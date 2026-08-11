@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 _TRUE_VALUES = ("1", "true", "yes", "y", "on")
 _SUPPORTED_CHANNELS = ("none", "support_api", "remnawave")
+_TOOL_CHANNELS = ("support_api", "remnawave")
 
 INTEGRATION_TOOL_META = {
     "check_payment": {
@@ -66,6 +67,19 @@ INTEGRATION_CONTEXT_DEFAULTS = {
 }
 INTEGRATION_FEATURE_DEFAULTS = {
     "subscription_profile": True,
+    "subscription_url": True,
+}
+INTEGRATION_FEATURE_META = {
+    "subscription_profile": {
+        "label": "Профиль подписки и ноды",
+        "description": "Short ID, трафик, лимиты, технические ссылки и доступные ноды Remnawave.",
+        "channels": ["remnawave"],
+    },
+    "subscription_url": {
+        "label": "Выдача subscription URL",
+        "description": "Основная ссылка подписки Remnawave для выдачи клиенту, AI и менеджеру.",
+        "channels": ["remnawave"],
+    },
 }
 INTEGRATION_CHANNEL_TOOL_SUPPORT = {
     "support_api": {
@@ -179,7 +193,7 @@ class UserInfoService:
         self.remnawave_caddy_token = (getattr(config, "remnawave_caddy_token", "") or "").strip()
         self.remnawave_cache_ttl = 120.0
 
-        self._tool_flags = dict(INTEGRATION_TOOL_DEFAULTS)
+        self._tool_flags = {channel: dict(INTEGRATION_TOOL_DEFAULTS) for channel in _TOOL_CHANNELS}
         self._provide_ai_context = INTEGRATION_CONTEXT_DEFAULTS["provide_ai_context"]
         self._provide_manager_card = INTEGRATION_CONTEXT_DEFAULTS["provide_manager_card"]
         self._feature_flags = dict(INTEGRATION_FEATURE_DEFAULTS)
@@ -193,6 +207,10 @@ class UserInfoService:
     @classmethod
     def get_tool_meta(cls) -> Dict[str, Dict]:
         return INTEGRATION_TOOL_META
+
+    @classmethod
+    def get_feature_meta(cls) -> Dict[str, Dict]:
+        return INTEGRATION_FEATURE_META
 
     @classmethod
     def get_channel_tool_support(cls) -> Dict[str, set]:
@@ -210,6 +228,7 @@ class UserInfoService:
             "integration_provide_ai_context",
             "integration_provide_manager_card",
             "integration_feature_subscription_profile",
+            "integration_feature_subscription_url",
             "support_api_enabled",
             "support_api_url",
             "support_api_token",
@@ -223,7 +242,11 @@ class UserInfoService:
             "remnawave_password",
             "remnawave_caddy_token",
             "remnawave_cache_ttl",
-        ] + [f"integration_tool_{name}" for name in INTEGRATION_TOOL_META.keys()]
+        ] + [f"integration_tool_{name}" for name in INTEGRATION_TOOL_META.keys()] + [
+            f"integration_tool_{channel}_{name}"
+            for channel in _TOOL_CHANNELS
+            for name in INTEGRATION_TOOL_META.keys()
+        ]
         try:
             rows = await SystemConfig.filter(key__in=keys).all()
             values = {r.key: (r.value or "") for r in rows}
@@ -266,8 +289,12 @@ class UserInfoService:
             for name, default in INTEGRATION_FEATURE_DEFAULTS.items():
                 self._feature_flags[name] = _as_bool(values.get(f"integration_feature_{name}"), default)
 
-            for name, default in INTEGRATION_TOOL_DEFAULTS.items():
-                self._tool_flags[name] = _as_bool(values.get(f"integration_tool_{name}"), default)
+            for channel in _TOOL_CHANNELS:
+                for name, default in INTEGRATION_TOOL_DEFAULTS.items():
+                    raw = values.get(f"integration_tool_{channel}_{name}")
+                    if raw is None:
+                        raw = values.get(f"integration_tool_{name}")
+                    self._tool_flags[channel][name] = _as_bool(raw, default)
 
             self._settings_ts = now
         except Exception as e:
@@ -297,12 +324,12 @@ class UserInfoService:
 
     def tool_enabled(self, name: str, channel: Optional[str] = None) -> bool:
         channel = self._normalize_channel(channel or self.active_channel)
-        if name == "get_subscription_info" and not self.feature_enabled("subscription_profile"):
+        if channel == "remnawave" and name == "get_subscription_info" and not self.feature_enabled("subscription_profile"):
             return False
         return (
             self.is_configured(channel)
             and name in INTEGRATION_CHANNEL_TOOL_SUPPORT.get(channel, set())
-            and bool(self._tool_flags.get(name, False))
+            and bool((self._tool_flags.get(channel) or {}).get(name, False))
         )
 
     def feature_enabled(self, name: str) -> bool:
@@ -317,6 +344,22 @@ class UserInfoService:
             channel: {name: name in supported for name in INTEGRATION_TOOL_META.keys()}
             for channel, supported in INTEGRATION_CHANNEL_TOOL_SUPPORT.items()
         }
+
+    @staticmethod
+    def _subscription_has_profile_details(sub: Dict) -> bool:
+        return any(
+            key in sub
+            for key in (
+                "short_id",
+                "device_limit",
+                "traffic_limit_bytes",
+                "traffic_used_bytes",
+                "links",
+                "happ_link",
+                "happ_crypto_link",
+                "accessible_nodes_count",
+            )
+        )
 
     def _remnawave_api(self) -> RemnawaveAPI:
         return RemnawaveAPI(
@@ -372,14 +415,40 @@ class UserInfoService:
             return data
         if (data.get("channel") or self.active_channel) != "remnawave":
             return data
-        if self.feature_enabled("subscription_profile"):
-            return data
         result = dict(data)
-        result["summary"] = dict(result.get("summary") or {})
-        result["summary"]["remna_subscriptions_count"] = 0
-        result["summary"]["active_remna_subscriptions_count"] = 0
         connections = dict(result.get("connections") or {})
-        connections["remna_subscriptions"] = []
+        raw_subscriptions = [dict(sub) for sub in (connections.get("remna_subscriptions") or [])]
+        profile_enabled = self.feature_enabled("subscription_profile")
+        url_enabled = self.feature_enabled("subscription_url")
+
+        if profile_enabled:
+            if not url_enabled:
+                for sub in raw_subscriptions:
+                    sub.pop("subscription_url", None)
+            connections["remna_subscriptions"] = raw_subscriptions
+            result["connections"] = connections
+            return result
+
+        minimal_subscriptions = []
+        if url_enabled:
+            for sub in raw_subscriptions:
+                subscription_url = sub.get("subscription_url")
+                if not subscription_url:
+                    continue
+                minimal_subscriptions.append(
+                    {
+                        "id": sub.get("id"),
+                        "username": sub.get("username"),
+                        "tarif": sub.get("tarif"),
+                        "is_currently_active": sub.get("is_currently_active"),
+                        "subscription_url": subscription_url,
+                    }
+                )
+
+        result["summary"] = dict(result.get("summary") or {})
+        result["summary"]["remna_subscriptions_count"] = len(raw_subscriptions)
+        result["summary"]["active_remna_subscriptions_count"] = sum(1 for sub in raw_subscriptions if sub.get("is_currently_active"))
+        connections["remna_subscriptions"] = minimal_subscriptions
         connections["accessible_nodes"] = []
         result["connections"] = connections
         return result
@@ -824,7 +893,13 @@ class UserInfoService:
         parts.append(
             f"- Подписок: всего {summary.get('remna_subscriptions_count', len(subs))}, активных {summary.get('active_remna_subscriptions_count', 0)}"
         )
+        if subs and not any(self._subscription_has_profile_details(sub) for sub in subs):
+            parts.append("- Технический профиль подписок скрыт настройками интеграции; доступна только subscription_url.")
         for sub in subs[:8]:
+            if not self._subscription_has_profile_details(sub):
+                url_mark = "subscription_url доступна" if sub.get("subscription_url") else "subscription_url скрыта"
+                parts.append(f"  • «{sub.get('tarif') or sub.get('username') or '?'}» / username {sub.get('username', '?')}: {url_mark}")
+                continue
             limit = sub.get("traffic_limit_bytes") or 0
             traffic = f"{_fmt_gb(sub.get('traffic_used_bytes'))} ГБ из {'безлимит' if not limit else _fmt_gb(limit) + ' ГБ'}"
             extra = []
@@ -910,7 +985,13 @@ class UserInfoService:
         parts.append(
             f"• Подписки: {summary.get('active_remna_subscriptions_count', 0)} актив. из {summary.get('remna_subscriptions_count', len(subs))}"
         )
+        if subs and not any(self._subscription_has_profile_details(sub) for sub in subs):
+            parts.append("• Технический профиль скрыт; в выдаче оставлена только subscription_url")
         for sub in subs[:4]:
+            if not self._subscription_has_profile_details(sub):
+                links_mark = "есть subscription_url" if sub.get("subscription_url") else "без ссылки"
+                parts.append(f"   – {sub.get('username', '?')}: {links_mark}")
+                continue
             limit = sub.get("traffic_limit_bytes") or 0
             traffic = f"{_fmt_gb(sub.get('traffic_used_bytes'))}/{'∞' if not limit else _fmt_gb(limit)} ГБ"
             links_mark = "есть ссылка" if sub.get("subscription_url") else "без ссылки"

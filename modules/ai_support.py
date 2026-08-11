@@ -468,7 +468,6 @@ class AISupport:
         all_keys = [provider.api_key] if provider.api_key else []
         if provider.api_keys:
             try:
-                import json
                 additional_keys = json.loads(provider.api_keys) if isinstance(provider.api_keys, str) else provider.api_keys
                 if isinstance(additional_keys, list):
                     all_keys.extend([k for k in additional_keys if k])
@@ -566,7 +565,14 @@ class AISupport:
             })
         else:
             messages.append({"role": "user", "content": question})
-        
+
+        if provider.api_type == "groq" and "llama-3.1-8b-instant" in (provider.model_name or "").lower():
+            system_message = str(messages[0].get("content") or "")
+            if len(system_message) > 3500:
+                messages[0]["content"] = system_message[:3500] + "\n…(контекст сокращён под лимит модели)"
+            if len(messages) > 6:
+                messages = [messages[0], *messages[-5:]]
+
         payload = {
             "model": provider.model_name,
             "messages": messages,
