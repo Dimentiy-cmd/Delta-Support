@@ -6,6 +6,7 @@ import asyncio
 import json
 import redis
 import html
+import re
 import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode
@@ -127,6 +128,108 @@ class SupportBot:
             await task
         except Exception:
             pass
+
+    @staticmethod
+    def _plain_match_text(value) -> str:
+        return " ".join(re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9]+", str(value or "").lower()))
+
+    def _is_single_device_delete_request(self, text: str) -> bool:
+        normalized = self._plain_match_text(text)
+        if not normalized:
+            return False
+        has_delete = any(
+            word in normalized.split()
+            for word in ("удали", "удалить", "удалите", "убери", "убрать", "уберите", "отвяжи", "отвязать", "отвяжите")
+        )
+        if not has_delete:
+            return False
+        return not any(word in normalized.split() for word in ("все", "всё", "всех"))
+
+    @staticmethod
+    def _device_hwid(device: dict) -> str:
+        for key in ("hwid", "HWID", "deviceHwid", "device_hwid", "id"):
+            value = str((device or {}).get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    def _device_label(self, device: dict) -> str:
+        if not device:
+            return "устройство"
+        direct_keys = (
+            "deviceName",
+            "device_name",
+            "name",
+            "model",
+            "deviceModel",
+            "device_model",
+            "platform",
+            "os",
+            "app",
+            "appName",
+        )
+        parts = []
+        for key in direct_keys:
+            value = str(device.get(key) or "").strip()
+            if value and value not in parts:
+                parts.append(value)
+        return " / ".join(parts[:3]) or "устройство"
+
+    def _device_search_text(self, device: dict) -> str:
+        values = []
+        for key, value in (device or {}).items():
+            if key.lower() in {"hwid", "id", "userid", "user_id", "useruuid", "user_uuid"}:
+                continue
+            if isinstance(value, (str, int, float)):
+                values.append(str(value))
+        return self._plain_match_text(" ".join(values))
+
+    def _device_match_score(self, query: str, device: dict) -> int:
+        query_terms = [
+            t for t in self._plain_match_text(query).split()
+            if t not in {"удали", "удалить", "убери", "убрать", "отвяжи", "отвязать", "устройство", "девайс"}
+        ]
+        if not query_terms:
+            return 0
+        haystack = self._device_search_text(device)
+        return sum(1 for term in query_terms if term in haystack)
+
+    async def _maybe_send_device_delete_confirmation(self, update: Update, chat, user_id: int, question_text: str) -> bool:
+        if not self._is_single_device_delete_request(question_text):
+            return False
+        try:
+            subscriptions = await self.user_info.get_own_subscriptions(user_id)
+            candidates = []
+            for sub in subscriptions:
+                username = sub.get("username")
+                if not username:
+                    continue
+                devices_data = await self.user_info.get_subscription_devices(username)
+                for device in (devices_data or {}).get("devices") or []:
+                    hwid = self._device_hwid(device)
+                    if not hwid:
+                        continue
+                    candidates.append((sub, device, self._device_match_score(question_text, device)))
+            if not candidates:
+                return False
+            candidates.sort(key=lambda item: item[2], reverse=True)
+            best_sub, best_device, best_score = candidates[0]
+            if len(candidates) > 1 and best_score <= 0:
+                return False
+            if len(candidates) > 1 and best_score == candidates[1][2]:
+                return False
+            label = self._device_label(best_device)
+            username = best_sub.get("username")
+            action = PendingAction(
+                action="delete_device",
+                params={"subscription_username": username, "hwid": self._device_hwid(best_device), "device_label": label},
+                confirm_text=f"Подтвердите удаление устройства «{label}» из подписки «{best_sub.get('tarif') or username}».",
+            )
+            await self._send_pending_action_confirmation(update, chat, action)
+            return True
+        except Exception as e:
+            logger.warning(f"Device delete intent handling failed: {e}")
+            return False
 
     async def refresh_runtime_settings(self, force: bool = False):
         now = time.monotonic()
@@ -2650,6 +2753,8 @@ class SupportBot:
                     logger.warning(f"Failed to send transcript to group: {e}")
 
         if question_text:
+            if await self._maybe_send_device_delete_confirmation(update, chat, user_id, question_text):
+                return
             typing_stop, typing_task = self._start_typing(update.effective_chat.id if update.effective_chat else user_id)
             try:
                 chat_messages = await self.db.get_chat_messages(chat.id, limit=20)
