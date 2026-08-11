@@ -294,7 +294,9 @@ class RemnawaveAPI:
             payload_response = response.get("response") if isinstance(response, dict) else None
             if isinstance(payload_response, dict) and isinstance(payload_response.get("devices"), list):
                 return all(str(item.get("hwid") or "") != str(device_hwid) for item in payload_response["devices"])
-            return True
+            devices_info = await self.get_user_devices_all(str(identifier))
+            devices = devices_info.get("devices") or []
+            return all(str(item.get("hwid") or "") != str(device_hwid) for item in devices)
         except RemnawaveAPIError:
             return False
 

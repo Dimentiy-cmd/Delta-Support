@@ -8,7 +8,7 @@ import redis
 import html
 import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode
+from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
@@ -100,6 +100,33 @@ class SupportBot:
             self._md_to_html = _md_to_html
         except Exception:
             self._md_to_html = lambda t: html.escape(t or "")
+
+    async def _typing_loop(self, chat_id: int, stop_event: asyncio.Event):
+        while not stop_event.is_set():
+            try:
+                await self.application.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            except Exception as e:
+                logger.debug(f"Typing action failed for chat {chat_id}: {e}")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=4.0)
+            except asyncio.TimeoutError:
+                pass
+
+    def _start_typing(self, chat_id: Optional[int]):
+        if not chat_id or not self.application:
+            return None, None
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(self._typing_loop(int(chat_id), stop_event))
+        return stop_event, task
+
+    async def _stop_typing(self, stop_event, task):
+        if not stop_event or not task:
+            return
+        stop_event.set()
+        try:
+            await task
+        except Exception:
+            pass
 
     async def refresh_runtime_settings(self, force: bool = False):
         now = time.monotonic()
@@ -991,7 +1018,11 @@ class SupportBot:
             "last_name": user.last_name
         }
         
-        ai_response = await self.ai.get_ai_answer(message_text, context, chat_history)
+        typing_stop, typing_task = self._start_typing(update.effective_chat.id if update.effective_chat else user_id)
+        try:
+            ai_response = await self.ai.get_ai_answer(message_text, context, chat_history)
+        finally:
+            await self._stop_typing(typing_stop, typing_task)
         
         if ai_response:
             # Сохраняем ответ AI
@@ -2580,11 +2611,19 @@ class SupportBot:
         if info["kind"] == "text":
             question_text = info["text"]
         elif info["kind"] in ("voice", "audio", "video_note") and self._ai_voice_enabled:
-            transcript = await self._transcribe_voice_message(info)
+            typing_stop, typing_task = self._start_typing(update.effective_chat.id if update.effective_chat else user_id)
+            try:
+                transcript = await self._transcribe_voice_message(info)
+            finally:
+                await self._stop_typing(typing_stop, typing_task)
             if transcript:
                 question_text = transcript
         elif info["kind"] == "photo" and self._ai_vision_enabled:
-            image_data_url = await self._photo_to_data_url(info)
+            typing_stop, typing_task = self._start_typing(update.effective_chat.id if update.effective_chat else user_id)
+            try:
+                image_data_url = await self._photo_to_data_url(info)
+            finally:
+                await self._stop_typing(typing_stop, typing_task)
             if image_data_url:
                 question_text = (info.get("text") or "").strip() or (
                     "Клиент прислал изображение (вероятно, скриншот ошибки или экрана приложения). "
@@ -2611,20 +2650,24 @@ class SupportBot:
                     logger.warning(f"Failed to send transcript to group: {e}")
 
         if question_text:
-            chat_messages = await self.db.get_chat_messages(chat.id, limit=20)
-            chat_history = [{"role": "user" if msg.message_type == "user" else "assistant", "message": msg.content} for msg in chat_messages]
-            context_info = {"user_id": user_id, "username": user.username, "first_name": user.first_name, "last_name": user.last_name}
-            # Данные аккаунта клиента из Support API (баланс, подписки, ключи)
+            typing_stop, typing_task = self._start_typing(update.effective_chat.id if update.effective_chat else user_id)
             try:
-                account_info = await self.user_info.get_ai_context(user_id)
-                if account_info:
-                    context_info["account_info"] = account_info
-            except Exception as e:
-                logger.warning(f"Support API context failed for user {user_id}: {e}")
-            ai_response = await self.ai.get_ai_answer(
-                question_text, context_info, chat_history, image_data_url=image_data_url,
-                execute_tools=True, user_info_service=self.user_info,
-            )
+                chat_messages = await self.db.get_chat_messages(chat.id, limit=20)
+                chat_history = [{"role": "user" if msg.message_type == "user" else "assistant", "message": msg.content} for msg in chat_messages]
+                context_info = {"user_id": user_id, "username": user.username, "first_name": user.first_name, "last_name": user.last_name}
+                # Данные аккаунта клиента из Support API (баланс, подписки, ключи)
+                try:
+                    account_info = await self.user_info.get_ai_context(user_id)
+                    if account_info:
+                        context_info["account_info"] = account_info
+                except Exception as e:
+                    logger.warning(f"Support API context failed for user {user_id}: {e}")
+                ai_response = await self.ai.get_ai_answer(
+                    question_text, context_info, chat_history, image_data_url=image_data_url,
+                    execute_tools=True, user_info_service=self.user_info,
+                )
+            finally:
+                await self._stop_typing(typing_stop, typing_task)
             if isinstance(ai_response, PendingAction):
                 await self._send_pending_action_confirmation(update, chat, ai_response)
             elif ai_response:

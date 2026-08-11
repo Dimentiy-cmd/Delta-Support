@@ -82,7 +82,7 @@
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom: 10px;">
         <div>
           <div style="font-weight: 700;">Remnawave v3+</div>
-          <div class="muted" style="font-size: 13px;">Подписки, ссылки, ноды и устройства напрямую из Remnawave</div>
+          <div class="muted" style="font-size: 13px;">Подписки, ссылки и устройства напрямую из Remnawave</div>
         </div>
         <Tag :severity="form.active_channel === 'remnawave' ? 'success' : 'secondary'" :value="form.active_channel === 'remnawave' ? 'Активен' : 'Не активен'" />
       </div>
@@ -269,7 +269,7 @@
           <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px;">
             <div>
               <div style="font-weight:700;">Remnawave v3+</div>
-              <div class="muted" style="font-size:12px;">Подписки, subscription_url, ноды и устройства напрямую из Remnawave.</div>
+              <div class="muted" style="font-size:12px;">Подписки, subscription_url и устройства напрямую из Remnawave.</div>
             </div>
             <Tag :severity="form.active_channel === 'remnawave' ? 'success' : 'secondary'" :value="form.active_channel === 'remnawave' ? 'Активен' : 'Ожидает'" />
           </div>
