@@ -83,16 +83,6 @@
         <span :style="{ color: t.status ? '#22c55e' : '#f59e0b' }">{{ t.summa }} ₽</span>
       </div>
 
-      <div v-if="nodes.length" class="acc-section-title">Подключения / ноды</div>
-      <div v-for="(n, i) in nodes" :key="'n' + i" class="acc-card">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-          <span style="font-weight:600;">{{ n.subscription_username || 'Подписка' }}</span>
-          <span class="muted">{{ n.country_code || '—' }}</span>
-        </div>
-        <div class="muted" style="font-size:12px; margin-top:4px;">
-          {{ n.config_profile_name || n.node_name || 'Подключение' }}
-        </div>
-      </div>
     </div>
   </div>
 </template>
@@ -113,7 +103,6 @@ const activeSubs = computed(() => subs.value.filter((s: any) => s.is_currently_a
 const outline = computed(() => data.value?.connections?.outline_keys || [])
 const xray = computed(() => data.value?.connections?.xray_keys || [])
 const txs = computed(() => (data.value?.transactions || []).slice(0, 3))
-const nodes = computed(() => (data.value?.connections?.accessible_nodes || []).slice(0, 8))
 const hasBalance = computed(() => data.value?.user?.balance !== null && data.value?.user?.balance !== undefined)
 const hasTrialInfo = computed(() => data.value?.user?.trial_available !== null && data.value?.user?.trial_available !== undefined)
 const channelLabel = computed(() => data.value?.channel === 'remnawave' ? 'Remnawave v3+' : 'Support API')

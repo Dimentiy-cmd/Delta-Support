@@ -71,8 +71,8 @@ INTEGRATION_FEATURE_DEFAULTS = {
 }
 INTEGRATION_FEATURE_META = {
     "subscription_profile": {
-        "label": "Профиль подписки и ноды",
-        "description": "Short ID, трафик, лимиты, технические ссылки и доступные ноды Remnawave.",
+        "label": "Профиль подписки",
+        "description": "Short ID, трафик, лимиты и технические данные подписки Remnawave.",
         "channels": ["remnawave"],
     },
     "subscription_url": {
@@ -357,7 +357,6 @@ class UserInfoService:
                 "links",
                 "happ_link",
                 "happ_crypto_link",
-                "accessible_nodes_count",
             )
         )
 
@@ -512,7 +511,6 @@ class UserInfoService:
 
     async def _build_remnawave_account(self, api: RemnawaveAPI, telegram_id: int, users: List[Dict]) -> Dict:
         subscriptions = []
-        accessible_nodes = []
         now = datetime.now(timezone.utc)
         created_dates = []
         active_count = 0
@@ -528,7 +526,6 @@ class UserInfoService:
                 active_count += 1
             subscription_info = {}
             links = {}
-            nodes = []
             if short_uuid:
                 try:
                     subscription_info = await api.get_subscription_info(short_uuid)
@@ -538,11 +535,6 @@ class UserInfoService:
                     links = await api.get_subscription_links(short_uuid)
                 except Exception:
                     links = {}
-            if user_uuid:
-                try:
-                    nodes = await api.get_user_accessible_nodes(user_uuid)
-                except Exception as e:
-                    logger.debug(f"Remnawave accessible nodes failed for {user_uuid}: {e}")
             subscriptions.append(
                 {
                     "id": user.get("id") or user_uuid or short_uuid,
@@ -565,20 +557,8 @@ class UserInfoService:
                     "online_at": _to_iso(traffic.get("onlineAt")),
                     "first_connected_at": _to_iso(traffic.get("firstConnectedAt")),
                     "last_connected_node_uuid": traffic.get("lastConnectedNodeUuid"),
-                    "accessible_nodes_count": len(nodes),
                 }
             )
-            for node in nodes:
-                accessible_nodes.append(
-                    {
-                        "subscription_username": user.get("username"),
-                        "subscription_short_id": short_uuid or None,
-                        "node_name": node.get("nodeName"),
-                        "country_code": node.get("countryCode"),
-                        "config_profile_name": node.get("configProfileName"),
-                        "active_inbounds": node.get("activeInbounds") or [],
-                    }
-                )
 
         earliest_created = min(created_dates).isoformat() if created_dates else None
         disabled_count = sum(1 for user in users if self._remna_status_label(user) == "DISABLED")
@@ -602,7 +582,7 @@ class UserInfoService:
                 "remna_subscriptions": subscriptions,
                 "outline_keys": [],
                 "xray_keys": [],
-                "accessible_nodes": accessible_nodes,
+                "accessible_nodes": [],
             },
             "transactions": [],
             "actions": [],
@@ -711,7 +691,6 @@ class UserInfoService:
                 user_uuid = str(user.get("uuid") or user.get("id") or "")
                 user_short_id = str(user.get("shortUuid") or short_id or "")
                 info = await api.get_subscription_info(user_short_id) if user_short_id else {}
-                nodes = await api.get_user_accessible_nodes(user_uuid) if user_uuid else []
                 subscription = await self._build_remnawave_account(api, int(user.get("telegramId") or 0), [user])
                 sub = ((subscription.get("connections") or {}).get("remna_subscriptions") or [{}])[0]
                 return {
@@ -721,7 +700,7 @@ class UserInfoService:
                     "links": info.get("links") or sub.get("links") or {},
                     "subscription_url": info.get("subscriptionUrl") or sub.get("subscription_url"),
                     "happ": info.get("happ"),
-                    "accessible_nodes": nodes,
+                    "accessible_nodes": [],
                 }
         except Exception as e:
             logger.warning(f"Remnawave subscription info failed: {e}")
@@ -844,6 +823,8 @@ class UserInfoService:
                 extras.append(f"устройств: {s['device_limit']}")
             extra_txt = f" ({', '.join(extras)})" if extras else ""
             parts.append(f"  • «{s.get('tarif', '?')}» до {_fmt_date(s.get('expire_at'))}, трафик {traffic}{extra_txt}")
+            if s.get("subscription_url"):
+                parts.append(f"    subscription_url: {s.get('subscription_url')}")
         if len(active_subs) > 6:
             parts.append(f"  • ... и еще {len(active_subs) - 6} активных подписок")
         if inactive_count > 0:
@@ -882,7 +863,6 @@ class UserInfoService:
         summary = data.get("summary") or {}
         conn = data.get("connections") or {}
         subs = conn.get("remna_subscriptions") or []
-        nodes = conn.get("accessible_nodes") or []
         parts: List[str] = []
         parts.append("ДАННЫЕ АККАУНТА ПОЛЬЗОВАТЕЛЯ (Remnawave, актуальные):")
         parts.append("- Баланс и платежи в этом канале недоступны.")
@@ -897,7 +877,7 @@ class UserInfoService:
             parts.append("- Технический профиль подписок скрыт настройками интеграции; доступна только subscription_url.")
         for sub in subs[:8]:
             if not self._subscription_has_profile_details(sub):
-                url_mark = "subscription_url доступна" if sub.get("subscription_url") else "subscription_url скрыта"
+                url_mark = f"subscription_url: {sub.get('subscription_url')}" if sub.get("subscription_url") else "subscription_url скрыта"
                 parts.append(f"  • «{sub.get('tarif') or sub.get('username') or '?'}» / username {sub.get('username', '?')}: {url_mark}")
                 continue
             limit = sub.get("traffic_limit_bytes") or 0
@@ -907,27 +887,17 @@ class UserInfoService:
                 extra.append(f"лимит устройств: {sub['device_limit']}")
             if sub.get("online_at"):
                 extra.append(f"онлайн: {_fmt_datetime(sub.get('online_at'))}")
-            if sub.get("accessible_nodes_count"):
-                extra.append(f"доступных нод: {sub.get('accessible_nodes_count')}")
             extra_txt = f" ({', '.join(extra)})" if extra else ""
             parts.append(
                 f"  • «{sub.get('tarif') or sub.get('username') or '?'}» / username {sub.get('username', '?')} / short_id {sub.get('short_id', '?')}: "
                 f"статус {sub.get('status_label', '?')}, до {_fmt_date(sub.get('expire_at'))}, трафик {traffic}{extra_txt}"
             )
+            if sub.get("subscription_url"):
+                parts.append(f"    subscription_url: {sub.get('subscription_url')}")
         if len(subs) > 8:
             parts.append(f"  • ... и ещё {len(subs) - 8} подписок")
-        if nodes:
-            parts.append("- Доступные подключения/ноды:")
-            seen = 0
-            for node in nodes[:8]:
-                seen += 1
-                label = node.get("config_profile_name") or node.get("node_name") or "node"
-                country = node.get("country_code") or "—"
-                parts.append(f"  • {node.get('subscription_username', '?')}: {label} ({country})")
-            if len(nodes) > seen:
-                parts.append(f"  • ... и ещё {len(nodes) - seen} вариантов подключения")
         parts.append(
-            "Если нужны устройства, конкретные ссылки подписки или управляющее действие, используй доступные инструменты и не выдумывай то, чего нет в контексте."
+            "Если пользователь просит ссылку подключения, отдавай subscription_url из данных подписки. Для устройств или управляющего действия используй доступные инструменты."
         )
         return "\n".join(parts)
 
@@ -975,7 +945,6 @@ class UserInfoService:
         summary = data.get("summary") or {}
         conn = data.get("connections") or {}
         subs = conn.get("remna_subscriptions") or []
-        nodes = conn.get("accessible_nodes") or []
         parts: List[str] = []
         parts.append("👤 Карточка клиента:")
         parts.append(f"• TG ID: {user.get('telegram_id', '?')}")
@@ -989,7 +958,7 @@ class UserInfoService:
             parts.append("• Технический профиль скрыт; в выдаче оставлена только subscription_url")
         for sub in subs[:4]:
             if not self._subscription_has_profile_details(sub):
-                links_mark = "есть subscription_url" if sub.get("subscription_url") else "без ссылки"
+                links_mark = f"subscription_url: {sub.get('subscription_url')}" if sub.get("subscription_url") else "без ссылки"
                 parts.append(f"   – {sub.get('username', '?')}: {links_mark}")
                 continue
             limit = sub.get("traffic_limit_bytes") or 0
@@ -1000,13 +969,6 @@ class UserInfoService:
             )
         if len(subs) > 4:
             parts.append(f"   – ... еще {len(subs) - 4}")
-        if nodes:
-            parts.append("• Подключения / ноды:")
-            for node in nodes[:4]:
-                label = node.get("config_profile_name") or node.get("node_name") or "node"
-                parts.append(f"   – {node.get('subscription_username', '?')}: {label} ({node.get('country_code') or '—'})")
-            if len(nodes) > 4:
-                parts.append(f"   – ... еще {len(nodes) - 4}")
         parts.append("• Баланс и платежи в этом канале недоступны")
         return "\n".join(parts)
 
