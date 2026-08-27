@@ -388,9 +388,25 @@ class SupportBot:
         self.application.add_handler(MessageHandler(filters.VIDEO_NOTE, self.handle_any_message))
         self.application.add_handler(MessageHandler(filters.Sticker.ALL, self.handle_any_message))
         self.application.add_handler(MessageHandler(filters.ANIMATION, self.handle_any_message))
-        
+        self.application.add_error_handler(self.error_handler)
+
         logger.info("Bot handlers registered")
-    
+
+    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
+        """Глобальный обработчик необработанных исключений PTB.
+        Без него ошибки внутри хендлеров (в т.ч. button_callback) проглатываются
+        библиотекой молча — в логах не остаётся ни следа, а пользователь видит
+        "зависшую" кнопку/отсутствие ответа."""
+        logger.opt(exception=context.error).error(f"Unhandled exception while processing update {update}")
+        try:
+            if isinstance(update, Update) and update.callback_query:
+                await update.callback_query.answer(
+                    "❌ Произошла ошибка. Попробуйте ещё раз или обратитесь к менеджеру.",
+                    show_alert=True,
+                )
+        except Exception:
+            pass
+
     async def start_polling(self):
         """Запуск поллинга без блокировки"""
         logger.info("Bot starting polling...")
@@ -818,8 +834,14 @@ class SupportBot:
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик нажатий на кнопки"""
         query = update.callback_query
-        await query.answer()
-        
+        try:
+            await query.answer()
+        except BadRequest as e:
+            # Устаревший/невалидный callback query (например, бот перезапускался
+            # или пользователь нажал кнопку спустя долгое время) не должен обрывать
+            # обработку — иначе кнопка "зависает" у пользователя без какой-либо реакции.
+            logger.warning(f"query.answer() failed for callback_data={query.data!r}: {e}")
+
         user_id = query.from_user.id
         data = query.data
         
