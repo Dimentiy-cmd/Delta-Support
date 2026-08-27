@@ -412,7 +412,16 @@ class SupportBot:
         logger.info("Bot starting polling...")
         await self.application.initialize()
         await self.application.start()
-        await self.application.updater.start_polling(drop_pending_updates=True)
+        # allowed_updates нужно указывать явно: Telegram запоминает последнее
+        # значение этого параметра (в т.ч. установленное прежним setWebhook) и
+        # применяет его и к getUpdates — если не передать его здесь, сервер может
+        # молча перестать присылать боту callback_query (нажатия инлайн-кнопок),
+        # сохранив только, например, "message". Из-за этого кнопки выглядели
+        # "зависшими": апдейт с нажатием кнопки до бота попросту не долетал.
+        await self.application.updater.start_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
+        )
         # Фоновый цикл автоматизации (автозакрытие, SLA-пинги)
         self._lifecycle_task = asyncio.create_task(self._lifecycle_loop())
 
